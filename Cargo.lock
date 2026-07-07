@@ -1182,6 +1182,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "panes-runtime"
+version = "0.1.0"
+dependencies = [
+ "panes-core",
+ "panes-platform",
+]
+
+[[package]]
 name = "panes-windows"
 version = "0.1.0"
 dependencies = [
