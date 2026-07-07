@@ -1156,6 +1156,7 @@ dependencies = [
  "panes-core",
  "panes-macos",
  "panes-platform",
+ "panes-runtime",
  "panes-windows",
 ]
 
