@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/panes-app",
+    "crates/panes-core",
+    "crates/panes-macos",
+    "crates/panes-platform",
+    "crates/panes-windows",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/martinbhatta/panes"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
