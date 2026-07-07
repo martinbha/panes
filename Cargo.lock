@@ -1073,6 +1073,7 @@ dependencies = [
  "bitflags",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
 ]
 
@@ -1258,11 +1259,12 @@ version = "0.1.0"
 dependencies = [
  "accessibility",
  "accessibility-sys",
- "cocoa",
  "core-foundation",
  "core-graphics 0.24.0",
  "global-hotkey",
- "objc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "panes-core",
  "panes-platform",
  "tao",

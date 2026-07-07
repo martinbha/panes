@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt::Display};
 
 mod coordinates;
+mod screen;
 
 use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
@@ -73,15 +74,11 @@ impl NativePlatform for MacOsPlatform {
     }
 
     fn cursor_position(&self) -> PlatformResult<Point> {
-        Err(PlatformError::Unsupported(
-            "macOS cursor integration is not implemented yet",
-        ))
+        screen::cursor_position()
     }
 
     fn screens(&self) -> PlatformResult<Vec<ScreenInfo>> {
-        Err(PlatformError::Unsupported(
-            "macOS screen integration is not implemented yet",
-        ))
+        screen::screens()
     }
 
     fn front_window(&self) -> PlatformResult<Option<WindowInfo>> {

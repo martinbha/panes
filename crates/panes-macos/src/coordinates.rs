@@ -16,6 +16,7 @@ impl CoordinateSpace {
         Some(Self { desktop_top })
     }
 
+    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn native_rect_to_panes(self, rect: Rect) -> Rect {
         Rect::new(
@@ -26,6 +27,7 @@ impl CoordinateSpace {
         )
     }
 
+    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn panes_rect_to_native(self, rect: Rect) -> Rect {
         Rect::new(

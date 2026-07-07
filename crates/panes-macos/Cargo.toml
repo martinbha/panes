@@ -10,11 +10,20 @@ repository.workspace = true
 [dependencies]
 accessibility = "0.2.0"
 accessibility-sys = "0.2.0"
-cocoa = "0.26.1"
 core-foundation = "0.10.1"
 core-graphics = "0.24.0"
 global-hotkey = { version = "0.8.0", default-features = false }
-objc = "0.2.7"
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "NSScreen",
+    "objc2-core-graphics",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "NSArray",
+    "NSGeometry",
+    "NSString",
+    "objc2-core-foundation",
+] }
 panes-core = { path = "../panes-core" }
 panes-platform = { path = "../panes-platform" }
 tao = { version = "0.35.3", default-features = false }
