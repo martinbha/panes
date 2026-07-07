@@ -10,7 +10,17 @@ fn main() {
         return;
     }
 
-    panes_macos::run_keyboard_menu_app();
+    let mut executor =
+        panes_runtime::CommandExecutor::with_default_config(panes_macos::MacOsPlatform::new());
+    panes_macos::run_keyboard_menu_app_with_handler(move |invocation| {
+        if let Err(error) = executor.execute(invocation) {
+            eprintln!(
+                "failed to execute {} command from {:?}: {error}",
+                invocation.command.label(),
+                invocation.source
+            );
+        }
+    });
 }
 
 #[cfg(target_os = "windows")]
