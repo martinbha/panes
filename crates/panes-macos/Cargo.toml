@@ -8,11 +8,20 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+accessibility = "0.2.0"
+accessibility-sys = "0.2.0"
+cocoa = "0.26.1"
+core-foundation = "0.10.1"
+core-graphics = "0.24.0"
 global-hotkey = { version = "0.8.0", default-features = false }
+objc = "0.2.7"
 panes-core = { path = "../panes-core" }
 panes-platform = { path = "../panes-platform" }
 tao = { version = "0.35.3", default-features = false }
 tray-icon = { version = "0.24.1", default-features = false }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
