@@ -1,0 +1,15 @@
+[package]
+name = "panes-windows"
+description = "Windows native adapter for panes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+panes-core = { path = "../panes-core" }
+panes-platform = { path = "../panes-platform" }
+
+[lints]
+workspace = true

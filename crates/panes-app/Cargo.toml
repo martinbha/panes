@@ -1,0 +1,25 @@
+[package]
+name = "panes-app"
+description = "Native panes app entry point."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "panes"
+path = "src/main.rs"
+
+[dependencies]
+panes-core = { path = "../panes-core" }
+panes-platform = { path = "../panes-platform" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+panes-macos = { path = "../panes-macos" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+panes-windows = { path = "../panes-windows" }
+
+[lints]
+workspace = true
