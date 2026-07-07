@@ -60,6 +60,11 @@ impl Rect {
     }
 
     #[must_use]
+    pub fn area(self) -> f64 {
+        self.size.width.max(0.0) * self.size.height.max(0.0)
+    }
+
+    #[must_use]
     pub fn mid_x(self) -> f64 {
         self.origin.x + self.size.width / 2.0
     }
@@ -86,6 +91,28 @@ impl Rect {
             (self.size.width - horizontal * 2.0).max(0.0),
             (self.size.height - vertical * 2.0).max(0.0),
         )
+    }
+
+    #[must_use]
+    pub fn contains_point(self, point: Point) -> bool {
+        point.x >= self.min_x()
+            && point.x <= self.max_x()
+            && point.y >= self.min_y()
+            && point.y <= self.max_y()
+    }
+
+    #[must_use]
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        let min_x = self.min_x().max(other.min_x());
+        let min_y = self.min_y().max(other.min_y());
+        let max_x = self.max_x().min(other.max_x());
+        let max_y = self.max_y().min(other.max_y());
+
+        if max_x <= min_x || max_y <= min_y {
+            return None;
+        }
+
+        Some(Self::new(min_x, min_y, max_x - min_x, max_y - min_y))
     }
 
     #[must_use]
@@ -133,5 +160,40 @@ impl Edge {
     #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contains_points_inside_rect_bounds() {
+        let rect = Rect::new(10.0, 20.0, 100.0, 200.0);
+
+        assert!(rect.contains_point(Point::new(10.0, 20.0)));
+        assert!(rect.contains_point(Point::new(50.0, 100.0)));
+        assert!(rect.contains_point(Point::new(110.0, 220.0)));
+        assert!(!rect.contains_point(Point::new(9.0, 100.0)));
+        assert!(!rect.contains_point(Point::new(50.0, 221.0)));
+    }
+
+    #[test]
+    fn calculates_intersection_area() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let other = Rect::new(50.0, 25.0, 100.0, 100.0);
+
+        let intersection = rect.intersection(other).expect("rects should overlap");
+
+        assert_eq!(intersection, Rect::new(50.0, 25.0, 50.0, 75.0));
+        assert_eq!(intersection.area(), 3750.0);
+    }
+
+    #[test]
+    fn touching_edges_do_not_intersect() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let other = Rect::new(100.0, 0.0, 100.0, 100.0);
+
+        assert_eq!(rect.intersection(other), None);
     }
 }
