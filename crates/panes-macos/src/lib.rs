@@ -1,5 +1,9 @@
 use std::{collections::HashMap, fmt::Display};
 
+mod coordinates;
+mod screen;
+mod window;
+
 use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
     hotkey::{HotKey, HotKeyParseError},
@@ -23,14 +27,16 @@ const QUIT_MENU_ID: &str = "panes.quit";
 pub struct MacOsPlatform {
     tray: Option<TrayState>,
     hotkeys: Option<RegisteredHotkeys>,
+    windows: window::WindowCache,
 }
 
 impl MacOsPlatform {
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             tray: None,
             hotkeys: None,
+            windows: window::WindowCache::default(),
         }
     }
 
@@ -71,27 +77,19 @@ impl NativePlatform for MacOsPlatform {
     }
 
     fn cursor_position(&self) -> PlatformResult<Point> {
-        Err(PlatformError::Unsupported(
-            "macOS cursor integration is not implemented yet",
-        ))
+        screen::cursor_position()
     }
 
     fn screens(&self) -> PlatformResult<Vec<ScreenInfo>> {
-        Err(PlatformError::Unsupported(
-            "macOS screen integration is not implemented yet",
-        ))
+        screen::screens()
     }
 
     fn front_window(&self) -> PlatformResult<Option<WindowInfo>> {
-        Err(PlatformError::Unsupported(
-            "macOS accessibility integration is not implemented yet",
-        ))
+        window::front_window(&self.windows)
     }
 
-    fn set_window_rect(&self, _window_id: WindowId, _rect: Rect) -> PlatformResult<Rect> {
-        Err(PlatformError::Unsupported(
-            "macOS window movement is not implemented yet",
-        ))
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> PlatformResult<Rect> {
+        window::set_window_rect(&self.windows, window_id, rect)
     }
 
     fn register_hotkeys(&mut self, bindings: &[HotkeyBinding]) -> PlatformResult<()> {
