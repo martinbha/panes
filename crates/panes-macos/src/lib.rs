@@ -1,5 +1,7 @@
 use std::{collections::HashMap, fmt::Display};
 
+mod coordinates;
+
 use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
     hotkey::{HotKey, HotKeyParseError},
