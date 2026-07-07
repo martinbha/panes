@@ -1156,6 +1156,7 @@ dependencies = [
  "panes-core",
  "panes-macos",
  "panes-platform",
+ "panes-runtime",
  "panes-windows",
 ]
 
@@ -1179,6 +1180,14 @@ name = "panes-platform"
 version = "0.1.0"
 dependencies = [
  "panes-core",
+]
+
+[[package]]
+name = "panes-runtime"
+version = "0.1.0"
+dependencies = [
+ "panes-core",
+ "panes-platform",
 ]
 
 [[package]]

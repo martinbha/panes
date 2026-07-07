@@ -4,6 +4,7 @@ members = [
     "crates/panes-core",
     "crates/panes-macos",
     "crates/panes-platform",
+    "crates/panes-runtime",
     "crates/panes-windows",
 ]
 resolver = "3"
