@@ -9,12 +9,21 @@ use accessibility_sys::{
     kAXValueTypeCGSize, kAXWindowRole, pid_t,
 };
 use core_foundation::{
+    array::CFArray,
     base::{CFType, CFTypeRef, TCFType},
     boolean::CFBoolean,
     dictionary::CFDictionary,
-    string::CFString,
+    number::CFNumber,
+    string::{CFString, CFStringRef},
 };
-use core_graphics::geometry::{CGPoint, CGSize};
+use core_graphics::{
+    geometry::{CGPoint, CGSize},
+    window::{
+        self as cg_window, CGWindowID, kCGNullWindowID, kCGWindowLayer,
+        kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowName,
+        kCGWindowNumber, kCGWindowOwnerPID,
+    },
+};
 use objc2_app_kit::NSRunningApplication;
 use panes_core::{Rect, WindowId};
 use panes_platform::{PlatformError, PlatformResult, WindowInfo};
@@ -118,7 +127,8 @@ fn ensure_accessibility_permission() -> PlatformResult<()> {
 fn window_info(window: &AXUIElement) -> PlatformResult<WindowInfo> {
     let pid = element_pid(window)?;
     let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid);
-    let id = window_id(window);
+    let title = optional_cf_string(window, &AXAttribute::title())?.unwrap_or_default();
+    let id = window_id(window, pid, &title);
 
     Ok(WindowInfo {
         id,
@@ -127,7 +137,7 @@ fn window_info(window: &AXUIElement) -> PlatformResult<WindowInfo> {
             .and_then(|app| app.bundleIdentifier())
             .map(|bundle_id| bundle_id.to_string())
             .unwrap_or_else(|| format!("pid:{pid}")),
-        title: optional_cf_string(window, &AXAttribute::title())?.unwrap_or_default(),
+        title,
         rect: window_rect(window)?,
         is_resizable: is_size_settable(window),
         is_minimized: optional_cf_boolean(window, &AXAttribute::minimized())?.unwrap_or(false),
@@ -157,8 +167,70 @@ fn window_rect(window: &AXUIElement) -> PlatformResult<Rect> {
     Ok(screen::coordinate_space()?.native_rect_to_panes(native_rect))
 }
 
-fn window_id(window: &AXUIElement) -> WindowId {
+fn window_id(window: &AXUIElement, pid: pid_t, title: &str) -> WindowId {
+    cg_window_id(pid, title)
+        .map(|id| WindowId(u64::from(id)))
+        .unwrap_or_else(|| ax_pointer_window_id(window))
+}
+
+fn ax_pointer_window_id(window: &AXUIElement) -> WindowId {
     WindowId(window.as_concrete_TypeRef() as usize as u64)
+}
+
+fn cg_window_id(pid: pid_t, title: &str) -> Option<CGWindowID> {
+    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+    let raw_windows = cg_window::copy_window_info(options, kCGNullWindowID)?;
+    // SAFETY: CGWindowListCopyWindowInfo returns an array of dictionaries keyed by CFString with
+    // CoreFoundation property-list values.
+    let windows: CFArray<CFDictionary<CFString, CFType>> =
+        unsafe { CFArray::wrap_under_get_rule(raw_windows.as_concrete_TypeRef()) };
+    let mut first_pid_window = None;
+
+    for window in &windows {
+        if cg_i64(&window, unsafe { kCGWindowOwnerPID }) != Some(i64::from(pid)) {
+            continue;
+        }
+
+        if cg_i64(&window, unsafe { kCGWindowLayer }).unwrap_or_default() != 0 {
+            continue;
+        }
+
+        let Some(id) =
+            cg_i64(&window, unsafe { kCGWindowNumber }).and_then(|id| id.try_into().ok())
+        else {
+            continue;
+        };
+        if first_pid_window.is_none() {
+            first_pid_window = Some(id);
+        }
+
+        if !title.is_empty()
+            && cg_string(&window, unsafe { kCGWindowName }).as_deref() == Some(title)
+        {
+            return Some(id);
+        }
+    }
+
+    first_pid_window
+}
+
+fn cg_i64(window: &CFDictionary<CFString, CFType>, key: CFStringRef) -> Option<i64> {
+    window
+        .find(cf_string_key(key))?
+        .downcast::<CFNumber>()?
+        .to_i64()
+}
+
+fn cg_string(window: &CFDictionary<CFString, CFType>, key: CFStringRef) -> Option<String> {
+    window
+        .find(cf_string_key(key))?
+        .downcast::<CFString>()
+        .map(|value| value.to_string())
+}
+
+fn cf_string_key(key: CFStringRef) -> CFString {
+    // SAFETY: CoreGraphics exposes these dictionary keys as process-lifetime CFString constants.
+    unsafe { CFString::wrap_under_get_rule(key) }
 }
 
 fn element_pid(element: &AXUIElement) -> PlatformResult<pid_t> {
