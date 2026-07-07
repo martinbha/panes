@@ -2,6 +2,7 @@ use std::{collections::HashMap, fmt::Display};
 
 mod coordinates;
 mod screen;
+mod window;
 
 use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
@@ -26,14 +27,16 @@ const QUIT_MENU_ID: &str = "panes.quit";
 pub struct MacOsPlatform {
     tray: Option<TrayState>,
     hotkeys: Option<RegisteredHotkeys>,
+    windows: window::WindowCache,
 }
 
 impl MacOsPlatform {
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             tray: None,
             hotkeys: None,
+            windows: window::WindowCache::default(),
         }
     }
 
@@ -82,9 +85,7 @@ impl NativePlatform for MacOsPlatform {
     }
 
     fn front_window(&self) -> PlatformResult<Option<WindowInfo>> {
-        Err(PlatformError::Unsupported(
-            "macOS accessibility integration is not implemented yet",
-        ))
+        window::front_window(&self.windows)
     }
 
     fn set_window_rect(&self, _window_id: WindowId, _rect: Rect) -> PlatformResult<Rect> {

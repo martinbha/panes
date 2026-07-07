@@ -46,7 +46,7 @@ fn read_screens() -> PlatformResult<Vec<ScreenInfo>> {
     })?;
     let screens = NSScreen::screens(mtm);
     let count = screens.count();
-    let mut result = Vec::with_capacity(count as usize);
+    let mut result = Vec::with_capacity(count);
 
     for index in 0..count {
         let screen = screens.objectAtIndex(index);
