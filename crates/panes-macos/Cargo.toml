@@ -8,8 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+global-hotkey = { version = "0.8.0", default-features = false }
 panes-core = { path = "../panes-core" }
 panes-platform = { path = "../panes-platform" }
+tao = { version = "0.35.3", default-features = false }
+tray-icon = { version = "0.24.1", default-features = false }
 
 [lints]
 workspace = true

@@ -171,3 +171,28 @@ pub enum CommandCategory {
     Move,
     Resize,
 }
+
+impl CommandCategory {
+    pub const ALL: &'static [Self] = &[
+        Self::Halves,
+        Self::Corners,
+        Self::Thirds,
+        Self::SizeAndPosition,
+        Self::Displays,
+        Self::Move,
+        Self::Resize,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Halves => "Halves",
+            Self::Corners => "Corners",
+            Self::Thirds => "Thirds",
+            Self::SizeAndPosition => "Size and Position",
+            Self::Displays => "Displays",
+            Self::Move => "Move",
+            Self::Resize => "Resize",
+        }
+    }
+}
