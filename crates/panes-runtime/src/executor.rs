@@ -274,3 +274,254 @@ fn adjacent_screen(current_id: ScreenId, screens: &[ScreenInfo], direction: isiz
 
     ordered[target_index]
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use panes_core::{Point, WindowId};
+    use panes_platform::{CommandSource, HotkeyBinding, MenuEntry, PlatformResult};
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct FakePlatform {
+        cursor_position: PlatformResult<Point>,
+        screens: PlatformResult<Vec<ScreenInfo>>,
+        front_window: PlatformResult<Option<WindowInfo>>,
+        set_result: RefCell<Option<PlatformResult<Rect>>>,
+        set_calls: RefCell<Vec<(WindowId, Rect)>>,
+    }
+
+    impl FakePlatform {
+        fn new() -> Self {
+            Self {
+                cursor_position: Ok(Point::new(100.0, 100.0)),
+                screens: Ok(vec![screen(1, 0.0), screen(2, 1000.0)]),
+                front_window: Ok(Some(window(Rect::new(100.0, 100.0, 200.0, 100.0)))),
+                set_result: RefCell::new(None),
+                set_calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl NativePlatform for FakePlatform {
+        fn platform_name(&self) -> &'static str {
+            "fake"
+        }
+
+        fn cursor_position(&self) -> PlatformResult<Point> {
+            self.cursor_position.clone()
+        }
+
+        fn screens(&self) -> PlatformResult<Vec<ScreenInfo>> {
+            self.screens.clone()
+        }
+
+        fn front_window(&self) -> PlatformResult<Option<WindowInfo>> {
+            self.front_window.clone()
+        }
+
+        fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> PlatformResult<Rect> {
+            self.set_calls.borrow_mut().push((window_id, rect));
+
+            if let Some(result) = self.set_result.borrow_mut().take() {
+                return result;
+            }
+
+            Ok(rect)
+        }
+
+        fn register_hotkeys(&mut self, _bindings: &[HotkeyBinding]) -> PlatformResult<()> {
+            Ok(())
+        }
+
+        fn show_tray_menu(&mut self, _entries: &[MenuEntry]) -> PlatformResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn executes_layout_command_against_focused_window_screen() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+        let execution = executor.execute(invocation(Command::LeftHalf)).unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(1));
+        assert_eq!(
+            execution.previous_rect,
+            Rect::new(100.0, 100.0, 200.0, 100.0)
+        );
+        assert_eq!(execution.requested_rect, Rect::new(0.0, 0.0, 500.0, 800.0));
+        assert_eq!(execution.applied_rect, execution.requested_rect);
+        assert_eq!(
+            executor.platform().set_calls.borrow().as_slice(),
+            &[(WindowId(42), Rect::new(0.0, 0.0, 500.0, 800.0))]
+        );
+        assert_eq!(
+            executor.history().restore_rect(WindowId(42)),
+            Some(Rect::new(100.0, 100.0, 200.0, 100.0))
+        );
+    }
+
+    #[test]
+    fn uses_cursor_screen_when_window_has_no_screen_overlap() {
+        let platform = FakePlatform {
+            cursor_position: Ok(Point::new(1200.0, 100.0)),
+            front_window: Ok(Some(window(Rect::new(-5000.0, -5000.0, 200.0, 100.0)))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let execution = executor.execute(invocation(Command::Maximize)).unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(2));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(1000.0, 0.0, 1000.0, 800.0)
+        );
+    }
+
+    #[test]
+    fn moves_display_commands_to_adjacent_screen() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+        let execution = executor.execute(invocation(Command::NextDisplay)).unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(2));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(1400.0, 350.0, 200.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn restores_previous_rect_after_successful_command() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+        executor.execute(invocation(Command::LeftHalf)).unwrap();
+        let restore = executor.execute(invocation(Command::Restore)).unwrap();
+
+        assert_eq!(
+            restore.requested_rect,
+            Rect::new(100.0, 100.0, 200.0, 100.0)
+        );
+        assert_eq!(executor.history().restore_rect(WindowId(42)), None);
+        assert_eq!(
+            executor.platform().set_calls.borrow().as_slice(),
+            &[
+                (WindowId(42), Rect::new(0.0, 0.0, 500.0, 800.0)),
+                (WindowId(42), Rect::new(100.0, 100.0, 200.0, 100.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn reports_missing_restore_rect() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+        let error = executor.execute(invocation(Command::Restore)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::NoRestoreRect {
+                window_id: WindowId(42)
+            }
+        );
+        assert!(executor.platform().set_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn reports_no_focused_window() {
+        let platform = FakePlatform {
+            front_window: Ok(None),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
+
+        assert_eq!(error, CommandExecutionError::NoFocusedWindow);
+    }
+
+    #[test]
+    fn reports_no_screens() {
+        let platform = FakePlatform {
+            screens: Ok(Vec::new()),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
+
+        assert_eq!(error, CommandExecutionError::NoScreens);
+    }
+
+    #[test]
+    fn reports_unsupported_windows() {
+        let platform = FakePlatform {
+            front_window: Ok(Some(WindowInfo {
+                is_resizable: false,
+                ..window(Rect::new(100.0, 100.0, 200.0, 100.0))
+            })),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::UnsupportedWindow {
+                window_id: WindowId(42),
+                reason: UnsupportedWindowReason::NotResizable,
+            }
+        );
+    }
+
+    #[test]
+    fn propagates_platform_errors() {
+        let platform = FakePlatform {
+            set_result: RefCell::new(Some(Err(PlatformError::Native(
+                "cannot move window".to_owned(),
+            )))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::Platform(PlatformError::Native("cannot move window".to_owned()))
+        );
+    }
+
+    fn invocation(command: Command) -> CommandInvocation {
+        CommandInvocation {
+            command,
+            source: CommandSource::Keyboard,
+        }
+    }
+
+    fn screen(id: u64, x: f64) -> ScreenInfo {
+        ScreenInfo {
+            id: ScreenId(id),
+            name: format!("Screen {id}"),
+            frame: Rect::new(x, 0.0, 1000.0, 800.0),
+            work_area: Rect::new(x, 0.0, 1000.0, 800.0),
+        }
+    }
+
+    fn window(rect: Rect) -> WindowInfo {
+        WindowInfo {
+            id: WindowId(42),
+            app_id: "test.app".to_owned(),
+            title: "Test Window".to_owned(),
+            rect,
+            is_resizable: true,
+            is_minimized: false,
+            is_hidden: false,
+        }
+    }
+}
