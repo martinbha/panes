@@ -26,7 +26,6 @@ impl CoordinateSpace {
         )
     }
 
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn panes_rect_to_native(self, rect: Rect) -> Rect {
         Rect::new(

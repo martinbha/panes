@@ -2,13 +2,14 @@ use std::{cell::RefCell, collections::HashMap, ffi::c_void};
 
 use accessibility::{AXAttribute, AXUIElement, Error as AccessibilityError};
 use accessibility_sys::{
-    AXError, AXIsProcessTrustedWithOptions, AXUIElementGetPid, AXValueGetType, AXValueGetTypeID,
-    AXValueGetValue, AXValueRef, error_string, kAXErrorAPIDisabled, kAXErrorAttributeUnsupported,
-    kAXErrorNoValue, kAXPositionAttribute, kAXSizeAttribute, kAXStandardWindowSubrole,
-    kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowRole, pid_t,
+    AXError, AXIsProcessTrustedWithOptions, AXUIElementGetPid, AXUIElementSetAttributeValue,
+    AXValueCreate, AXValueGetType, AXValueGetTypeID, AXValueGetValue, AXValueRef, error_string,
+    kAXErrorAPIDisabled, kAXErrorAttributeUnsupported, kAXErrorNoValue, kAXPositionAttribute,
+    kAXSizeAttribute, kAXStandardWindowSubrole, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint,
+    kAXValueTypeCGSize, kAXWindowRole, pid_t,
 };
 use core_foundation::{
-    base::{CFType, TCFType},
+    base::{CFType, CFTypeRef, TCFType},
     boolean::CFBoolean,
     dictionary::CFDictionary,
     string::CFString,
@@ -30,6 +31,10 @@ pub(crate) struct WindowCache {
 impl WindowCache {
     pub(crate) fn remember(&self, id: WindowId, window: AXUIElement) {
         self.windows.borrow_mut().insert(id, window);
+    }
+
+    pub(crate) fn get(&self, id: WindowId) -> Option<AXUIElement> {
+        self.windows.borrow().get(&id).cloned()
     }
 }
 
@@ -57,6 +62,43 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
     cache.remember(info.id, window);
 
     Ok(Some(info))
+}
+
+pub(crate) fn set_window_rect(
+    cache: &WindowCache,
+    window_id: WindowId,
+    rect: Rect,
+) -> PlatformResult<Rect> {
+    ensure_accessibility_permission()?;
+    let window = cache.get(window_id).ok_or(PlatformError::NotFound(
+        "macOS window is not cached; read the front window before moving it",
+    ))?;
+
+    if optional_cf_boolean(&window, &AXAttribute::minimized())?.unwrap_or(false) {
+        return Err(PlatformError::Unsupported(
+            "minimized macOS windows cannot be moved",
+        ));
+    }
+
+    if !is_size_settable(&window) {
+        return Err(PlatformError::Unsupported(
+            "macOS window does not allow resizing",
+        ));
+    }
+
+    let native_rect = screen::coordinate_space()?.panes_rect_to_native(rect);
+    set_ax_size(
+        &window,
+        kAXSizeAttribute,
+        CGSize::new(native_rect.size.width, native_rect.size.height),
+    )?;
+    set_ax_point(
+        &window,
+        kAXPositionAttribute,
+        CGPoint::new(native_rect.origin.x, native_rect.origin.y),
+    )?;
+
+    window_rect(&window)
 }
 
 fn ensure_accessibility_permission() -> PlatformResult<()> {
@@ -205,6 +247,58 @@ fn ax_size(element: &AXUIElement, name: &'static str) -> PlatformResult<CGSize> 
         Err(PlatformError::Native(format!(
             "failed to decode {name} as CGSize"
         )))
+    }
+}
+
+fn set_ax_point(element: &AXUIElement, name: &'static str, point: CGPoint) -> PlatformResult<()> {
+    set_ax_value(
+        element,
+        name,
+        kAXValueTypeCGPoint,
+        (&point as *const CGPoint).cast::<c_void>(),
+    )
+}
+
+fn set_ax_size(element: &AXUIElement, name: &'static str, size: CGSize) -> PlatformResult<()> {
+    set_ax_value(
+        element,
+        name,
+        kAXValueTypeCGSize,
+        (&size as *const CGSize).cast::<c_void>(),
+    )
+}
+
+fn set_ax_value(
+    element: &AXUIElement,
+    name: &'static str,
+    value_type: u32,
+    value: *const c_void,
+) -> PlatformResult<()> {
+    let attribute = CFString::from_static_string(name);
+    // SAFETY: The caller passes a pointer to the CoreGraphics type that matches value_type.
+    let ax_value = unsafe { AXValueCreate(value_type, value) };
+    if ax_value.is_null() {
+        return Err(PlatformError::Native(format!(
+            "failed to create AXValue for {name}"
+        )));
+    }
+
+    // SAFETY: AXValueCreate follows the Create Rule, so CFType takes ownership of the retain.
+    let ax_value = unsafe { CFType::wrap_under_create_rule(ax_value as CFTypeRef) };
+    // SAFETY: The element and attribute are valid CoreFoundation references, and ax_value is an
+    // AXValue created for this call.
+    let error = unsafe {
+        AXUIElementSetAttributeValue(
+            element.as_concrete_TypeRef(),
+            attribute.as_concrete_TypeRef(),
+            ax_value.as_CFTypeRef(),
+        )
+    };
+
+    if error == accessibility_sys::kAXErrorSuccess {
+        Ok(())
+    } else {
+        Err(ax_error("failed to set macOS window frame", error))
     }
 }
 

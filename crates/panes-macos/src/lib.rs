@@ -88,10 +88,8 @@ impl NativePlatform for MacOsPlatform {
         window::front_window(&self.windows)
     }
 
-    fn set_window_rect(&self, _window_id: WindowId, _rect: Rect) -> PlatformResult<Rect> {
-        Err(PlatformError::Unsupported(
-            "macOS window movement is not implemented yet",
-        ))
+    fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> PlatformResult<Rect> {
+        window::set_window_rect(&self.windows, window_id, rect)
     }
 
     fn register_hotkeys(&mut self, bindings: &[HotkeyBinding]) -> PlatformResult<()> {
