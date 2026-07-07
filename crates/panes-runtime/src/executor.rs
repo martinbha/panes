@@ -396,6 +396,25 @@ mod tests {
     }
 
     #[test]
+    fn previous_display_wraps_to_last_screen() {
+        let platform = FakePlatform {
+            screens: Ok(vec![screen(1, 0.0), screen(2, 1000.0), screen(3, 2000.0)]),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let execution = executor
+            .execute(invocation(Command::PreviousDisplay))
+            .unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(3));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(2400.0, 350.0, 200.0, 100.0)
+        );
+    }
+
+    #[test]
     fn restores_previous_rect_after_successful_command() {
         let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
 
@@ -411,6 +430,34 @@ mod tests {
             executor.platform().set_calls.borrow().as_slice(),
             &[
                 (WindowId(42), Rect::new(0.0, 0.0, 500.0, 800.0)),
+                (WindowId(42), Rect::new(100.0, 100.0, 200.0, 100.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_first_restore_rect_across_multiple_commands() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+        executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.execute(invocation(Command::Maximize)).unwrap();
+
+        assert_eq!(
+            executor.history().restore_rect(WindowId(42)),
+            Some(Rect::new(100.0, 100.0, 200.0, 100.0))
+        );
+
+        let restore = executor.execute(invocation(Command::Restore)).unwrap();
+
+        assert_eq!(
+            restore.requested_rect,
+            Rect::new(100.0, 100.0, 200.0, 100.0)
+        );
+        assert_eq!(
+            executor.platform().set_calls.borrow().as_slice(),
+            &[
+                (WindowId(42), Rect::new(0.0, 0.0, 500.0, 800.0)),
+                (WindowId(42), Rect::new(0.0, 0.0, 1000.0, 800.0)),
                 (WindowId(42), Rect::new(100.0, 100.0, 200.0, 100.0)),
             ]
         );
@@ -455,6 +502,25 @@ mod tests {
         let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
 
         assert_eq!(error, CommandExecutionError::NoScreens);
+    }
+
+    #[test]
+    fn reports_no_target_screen_when_window_and_cursor_miss_screens() {
+        let platform = FakePlatform {
+            cursor_position: Ok(Point::new(-100.0, -100.0)),
+            front_window: Ok(Some(window(Rect::new(-5000.0, -5000.0, 200.0, 100.0)))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::NoTargetScreen {
+                window_id: WindowId(42)
+            }
+        );
     }
 
     #[test]
