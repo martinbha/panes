@@ -108,8 +108,5 @@ Validate by running with a modified `LayoutConfig` in a dev build.
 - Missing Accessibility permission fails silently from the tray; errors only
   appear on the launching console
   ([#15](https://github.com/martinbha/panes/issues/15)).
-- Next/Previous Display keeps the window size; a window larger than the target
-  display's work area will overflow it
-  ([#8](https://github.com/martinbha/panes/issues/8)).
 - No scriptable driver exists yet to automate this checklist
   ([#18](https://github.com/martinbha/panes/issues/18)).

@@ -77,7 +77,7 @@ impl<P: NativePlatform> CommandExecutor<P> {
             return Err(CommandExecutionError::NoScreens);
         }
 
-        let screen = self.target_screen(invocation.command, &window, &screens)?;
+        let screen = self.current_screen(&window, &screens)?;
         let requested_rect = if invocation.command == Command::Restore {
             self.history
                 .restore_rect(window.id)
@@ -118,21 +118,6 @@ impl<P: NativePlatform> CommandExecutor<P> {
             requested_rect,
             applied_rect,
         })
-    }
-
-    fn target_screen<'a>(
-        &self,
-        command: Command,
-        window: &WindowInfo,
-        screens: &'a [ScreenInfo],
-    ) -> CommandExecutionResult<&'a ScreenInfo> {
-        let current = self.current_screen(window, screens)?;
-
-        match command {
-            Command::NextDisplay => Ok(adjacent_screen(current.id, screens, 1)),
-            Command::PreviousDisplay => Ok(adjacent_screen(current.id, screens, -1)),
-            _ => Ok(current),
-        }
     }
 
     fn current_screen<'a>(
@@ -255,26 +240,6 @@ fn screen_containing_point(
         .find(|screen| screen.frame.contains_point(point))
 }
 
-fn adjacent_screen(current_id: ScreenId, screens: &[ScreenInfo], direction: isize) -> &ScreenInfo {
-    let mut ordered = screens.iter().collect::<Vec<_>>();
-    ordered.sort_by(|left, right| {
-        left.frame
-            .min_x()
-            .total_cmp(&right.frame.min_x())
-            .then_with(|| left.frame.min_y().total_cmp(&right.frame.min_y()))
-            .then_with(|| left.id.0.cmp(&right.id.0))
-    });
-
-    let current_index = ordered
-        .iter()
-        .position(|screen| screen.id == current_id)
-        .unwrap_or(0);
-    let target_index =
-        (current_index as isize + direction).rem_euclid(ordered.len() as isize) as usize;
-
-    ordered[target_index]
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -379,38 +344,6 @@ mod tests {
         assert_eq!(
             execution.requested_rect,
             Rect::new(1000.0, 0.0, 1000.0, 800.0)
-        );
-    }
-
-    #[test]
-    fn moves_display_commands_to_adjacent_screen() {
-        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
-
-        let execution = executor.execute(invocation(Command::NextDisplay)).unwrap();
-
-        assert_eq!(execution.screen_id, ScreenId(2));
-        assert_eq!(
-            execution.requested_rect,
-            Rect::new(1400.0, 350.0, 200.0, 100.0)
-        );
-    }
-
-    #[test]
-    fn previous_display_wraps_to_last_screen() {
-        let platform = FakePlatform {
-            screens: Ok(vec![screen(1, 0.0), screen(2, 1000.0), screen(3, 2000.0)]),
-            ..FakePlatform::new()
-        };
-        let mut executor = CommandExecutor::with_default_config(platform);
-
-        let execution = executor
-            .execute(invocation(Command::PreviousDisplay))
-            .unwrap();
-
-        assert_eq!(execution.screen_id, ScreenId(3));
-        assert_eq!(
-            execution.requested_rect,
-            Rect::new(2400.0, 350.0, 200.0, 100.0)
         );
     }
 

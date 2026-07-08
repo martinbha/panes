@@ -106,8 +106,6 @@ pub fn default_hotkey_bindings() -> Vec<HotkeyBinding> {
         (Command::MaximizeHeight, "Control+Alt+H"),
         (Command::Center, "Control+Alt+C"),
         (Command::Restore, "Control+Alt+Backspace"),
-        (Command::NextDisplay, "Control+Alt+N"),
-        (Command::PreviousDisplay, "Control+Alt+P"),
         (Command::MoveLeft, "Control+Alt+Shift+ArrowLeft"),
         (Command::MoveRight, "Control+Alt+Shift+ArrowRight"),
         (Command::MoveUp, "Control+Alt+Shift+ArrowUp"),

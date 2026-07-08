@@ -104,9 +104,9 @@ fn menu(command: Command) -> CommandInvocation {
 /// Expected rect for each command on a 1000x800 screen at the origin with the
 /// default config and a 200x100 window at (100, 100).
 ///
-/// Commands that depend on history or another display return `None` and are
-/// covered by dedicated tests below. New commands must be added here, which
-/// the exhaustive match enforces at compile time.
+/// Commands that depend on history return `None` and are covered by
+/// dedicated tests below. New commands must be added here, which the
+/// exhaustive match enforces at compile time.
 fn expected_rect(command: Command) -> Option<Rect> {
     let rect = match command {
         Command::LeftHalf => Rect::new(0.0, 0.0, 500.0, 800.0),
@@ -134,7 +134,7 @@ fn expected_rect(command: Command) -> Option<Rect> {
         Command::MoveDown => Rect::new(100.0, 0.0, 200.0, 100.0),
         Command::Grow => Rect::new(85.0, 85.0, 230.0, 130.0),
         Command::Shrink => Rect::new(115.0, 115.0, 170.0, 70.0),
-        Command::Restore | Command::NextDisplay | Command::PreviousDisplay => return None,
+        Command::Restore => return None,
     };
     Some(rect)
 }
@@ -164,24 +164,6 @@ fn every_command_produces_its_expected_rect() {
             &[(WINDOW_ID, expected)]
         );
     }
-}
-
-#[test]
-fn display_commands_center_the_window_on_the_adjacent_screen() {
-    let expected = Rect::new(1400.0, 350.0, 200.0, 100.0);
-
-    let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
-    let next = executor.execute(keyboard(Command::NextDisplay)).unwrap();
-    assert_eq!(next.screen_id, ScreenId(2));
-    assert_eq!(next.requested_rect, expected);
-
-    // With two screens, previous also wraps to the other screen.
-    let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
-    let previous = executor
-        .execute(keyboard(Command::PreviousDisplay))
-        .unwrap();
-    assert_eq!(previous.screen_id, ScreenId(2));
-    assert_eq!(previous.requested_rect, expected);
 }
 
 #[test]
