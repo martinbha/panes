@@ -1,0 +1,38 @@
+# Example panes configuration.
+#
+# Copy to the platform config path and edit:
+#   macOS:   ~/Library/Application Support/panes/config.toml
+#   Windows: %APPDATA%\panes\config.toml
+#   Linux:   ~/.config/panes/config.toml
+#
+# Every section and key is optional; anything omitted keeps its built-in
+# default. Unknown keys are rejected with an error naming the key, so typos
+# are caught instead of silently ignored.
+
+[layout]
+# Pixels of spacing applied around tiled windows. Must be >= 0.
+gap = 0.0
+# Fraction of the screen used by "left"-side halves and corners (0..1).
+horizontal-split = 0.5
+# Fraction of the screen used by "top"-side halves and corners (0..1).
+vertical-split = 0.5
+# Size of Almost Maximize relative to the work area (0..1).
+almost-maximize-width = 0.9
+almost-maximize-height = 0.9
+# Pixels added/removed by Grow and Shrink. Must be >= 1.
+resize-step = 30.0
+
+[hotkeys]
+# Rebind any command by its id. Run `panes --runtime-summary` for counts, or
+# see crates/panes-core/src/command.rs for the full id list. An empty string
+# removes the binding.
+#
+# maximize = "Control+Shift+M"
+# center-half = "Control+Alt+X"
+# restore = ""
+
+[commands]
+# Command ids to hide from the tray menu and unbind from hotkeys entirely.
+#
+# disabled = ["top-left", "top-right", "bottom-left", "bottom-right"]
+disabled = []

@@ -19,6 +19,23 @@ Drag-to-snap, richer preferences, and platform-specific polish come after the ke
 - `crates/panes-windows`: Windows adapter placeholder.
 - `crates/panes-app`: app entry point.
 
+## Configuration
+
+panes reads an optional TOML config file at startup:
+
+- macOS: `~/Library/Application Support/panes/config.toml`
+- Windows: `%APPDATA%\panes\config.toml`
+- Linux: `~/.config/panes/config.toml`
+
+A missing file means built-in defaults. See
+[docs/config.example.toml](docs/config.example.toml) for all supported keys:
+layout settings (gap, split ratios, almost-maximize size, resize step),
+per-command hotkey overrides, and disabled commands.
+
+Invalid individual values fall back to their defaults with a warning on
+stderr; an unparseable file falls back to full defaults with an error naming
+the file and problem.
+
 ## Development
 
 ```bash
