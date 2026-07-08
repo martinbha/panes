@@ -10,17 +10,26 @@ fn main() {
         return;
     }
 
-    let mut executor =
-        panes_runtime::CommandExecutor::with_default_config(panes_macos::MacOsPlatform::new());
-    panes_macos::run_keyboard_menu_app_with_handler(move |invocation| {
-        if let Err(error) = executor.execute(invocation) {
-            eprintln!(
-                "failed to execute {} command from {:?}: {error}",
-                invocation.command.label(),
-                invocation.source
-            );
-        }
-    });
+    let loaded = panes_runtime::config::load();
+    report_config_problems(&loaded);
+
+    let mut executor = panes_runtime::CommandExecutor::new(
+        panes_macos::MacOsPlatform::new(),
+        loaded.config.layout.clone(),
+    );
+    panes_macos::run_keyboard_menu_app_with_handler(
+        loaded.config.menu_entries,
+        loaded.config.hotkey_bindings,
+        move |invocation| {
+            if let Err(error) = executor.execute(invocation) {
+                eprintln!(
+                    "failed to execute {} command from {:?}: {error}",
+                    invocation.command.label(),
+                    invocation.source
+                );
+            }
+        },
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -38,6 +47,17 @@ fn main() {
 #[cfg(target_os = "macos")]
 fn wants_runtime_summary() -> bool {
     std::env::args().any(|argument| argument == "--runtime-summary")
+}
+
+#[cfg(target_os = "macos")]
+fn report_config_problems(loaded: &panes_runtime::config::ConfigLoad) {
+    if let Some(error) = &loaded.error {
+        eprintln!("panes config error: {error}; using built-in defaults");
+    }
+
+    for issue in &loaded.issues {
+        eprintln!("panes config warning: {issue}");
+    }
 }
 
 fn print_runtime_summary(platform_name: &str) {

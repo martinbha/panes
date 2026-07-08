@@ -147,15 +147,23 @@ impl NativePlatform for MacOsPlatform {
 }
 
 pub fn run_keyboard_menu_app() -> ! {
-    run_keyboard_menu_app_with_handler(|invocation| {
-        println!(
-            "received {:?} command from {:?}",
-            invocation.command, invocation.source
-        );
-    })
+    run_keyboard_menu_app_with_handler(
+        default_menu_entries(),
+        default_hotkey_bindings(),
+        |invocation| {
+            println!(
+                "received {:?} command from {:?}",
+                invocation.command, invocation.source
+            );
+        },
+    )
 }
 
-pub fn run_keyboard_menu_app_with_handler<F>(mut handle_command: F) -> !
+pub fn run_keyboard_menu_app_with_handler<F>(
+    menu_entries: Vec<MenuEntry>,
+    hotkey_bindings: Vec<HotkeyBinding>,
+    mut handle_command: F,
+) -> !
 where
     F: FnMut(CommandInvocation) + 'static,
 {
@@ -171,8 +179,6 @@ where
     }));
 
     let mut platform = MacOsPlatform::new();
-    let menu_entries = default_menu_entries();
-    let hotkey_bindings = default_hotkey_bindings();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
