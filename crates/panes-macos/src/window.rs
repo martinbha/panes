@@ -107,19 +107,38 @@ pub(crate) fn set_window_rect(
     let size = CGSize::new(native_rect.size.width, native_rect.size.height);
     let position = CGPoint::new(native_rect.origin.x, native_rect.origin.y);
 
-    // Apply size, then position, then size again. macOS clamps a resize whose
-    // edges would overflow the screen from the window's *current* origin, so a
-    // lone size-then-move can leave a dimension clamped to the old position.
-    // Writing the size a second time — after the window sits at the target
-    // origin, where the full size fits — lets the requested frame stick. The
-    // final `window_rect` re-read still reports whatever actually held, so any
-    // legitimate app constraint (min/max sizes, Terminal's character grid)
-    // remains truthful in history. Mirrors Rectangle's `AccessibilityElement.setFrame`.
-    set_ax_size(&window, kAXSizeAttribute, size)?;
-    set_ax_point(&window, kAXPositionAttribute, position)?;
-    set_ax_size(&window, kAXSizeAttribute, size)?;
+    let current_position = ax_point(&window, kAXPositionAttribute)?;
+    let current_size = ax_size(&window, kAXSizeAttribute)?;
+    let position_changed = !coordinates_match(current_position.x, position.x)
+        || !coordinates_match(current_position.y, position.y);
+    let size_changed = !coordinates_match(current_size.width, size.width)
+        || !coordinates_match(current_size.height, size.height);
+
+    // Apply position first, then size, skipping attributes that already
+    // match. Position writes are never clamped by macOS — only size writes
+    // are, and only against the screen edges from the window's *current*
+    // origin. Layout targets always fit their work area, so once the window
+    // sits at the target origin a single size write cannot be clamped. This
+    // needs at most one synchronous relayout in the target app (the expensive
+    // call) where the old size → position → size dance needed two, and a pure
+    // move needs none. The final `window_rect` re-read still reports whatever
+    // actually held, so any legitimate app constraint (min/max sizes,
+    // Terminal's character grid) remains truthful in history.
+    if position_changed {
+        set_ax_point(&window, kAXPositionAttribute, position)?;
+    }
+    if size_changed {
+        set_ax_size(&window, kAXSizeAttribute, size)?;
+    }
 
     window_rect(&window)
+}
+
+/// Sub-pixel differences come from float round-tripping through the panes
+/// coordinate space, never from a real frame change, so treat them as equal
+/// and skip the synchronous write.
+fn coordinates_match(left: f64, right: f64) -> bool {
+    (left - right).abs() < 0.1
 }
 
 fn focused_application(system: &AXUIElement) -> PlatformResult<Option<AXUIElement>> {
