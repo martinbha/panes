@@ -20,8 +20,6 @@ pub enum Command {
     MaximizeHeight,
     Center,
     Restore,
-    NextDisplay,
-    PreviousDisplay,
     MoveLeft,
     MoveRight,
     MoveUp,
@@ -52,8 +50,6 @@ impl Command {
         Self::MaximizeHeight,
         Self::Center,
         Self::Restore,
-        Self::NextDisplay,
-        Self::PreviousDisplay,
         Self::MoveLeft,
         Self::MoveRight,
         Self::MoveUp,
@@ -85,8 +81,6 @@ impl Command {
             Self::MaximizeHeight => "maximize-height",
             Self::Center => "center",
             Self::Restore => "restore",
-            Self::NextDisplay => "next-display",
-            Self::PreviousDisplay => "previous-display",
             Self::MoveLeft => "move-left",
             Self::MoveRight => "move-right",
             Self::MoveUp => "move-up",
@@ -124,8 +118,6 @@ impl Command {
             Self::MaximizeHeight => "Maximize Height",
             Self::Center => "Center",
             Self::Restore => "Restore",
-            Self::NextDisplay => "Next Display",
-            Self::PreviousDisplay => "Previous Display",
             Self::MoveLeft => "Move Left",
             Self::MoveRight => "Move Right",
             Self::MoveUp => "Move Up",
@@ -157,7 +149,6 @@ impl Command {
             | Self::MaximizeHeight
             | Self::Center
             | Self::Restore => CommandCategory::SizeAndPosition,
-            Self::NextDisplay | Self::PreviousDisplay => CommandCategory::Displays,
             Self::MoveLeft | Self::MoveRight | Self::MoveUp | Self::MoveDown => {
                 CommandCategory::Move
             }
@@ -172,7 +163,6 @@ pub enum CommandCategory {
     Corners,
     Thirds,
     SizeAndPosition,
-    Displays,
     Move,
     Resize,
 }
@@ -183,7 +173,6 @@ impl CommandCategory {
         Self::Corners,
         Self::Thirds,
         Self::SizeAndPosition,
-        Self::Displays,
         Self::Move,
         Self::Resize,
     ];
@@ -195,7 +184,6 @@ impl CommandCategory {
             Self::Corners => "Corners",
             Self::Thirds => "Thirds",
             Self::SizeAndPosition => "Size and Position",
-            Self::Displays => "Displays",
             Self::Move => "Move",
             Self::Resize => "Resize",
         }

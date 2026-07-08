@@ -8,6 +8,9 @@ use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
     hotkey::{HotKey, HotKeyParseError},
 };
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSAlert, NSApplication};
+use objc2_foundation::NSString;
 use panes_core::{Command, CommandCategory, Point, Rect, WindowId};
 use panes_platform::{
     CommandInvocation, CommandSource, HotkeyBinding, MenuEntry, NativePlatform, PlatformError,
@@ -20,10 +23,13 @@ use tao::{
 };
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
-    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{
+        Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu, accelerator::Accelerator,
+    },
 };
 
 const QUIT_MENU_ID: &str = "panes.quit";
+const GUIDE_MENU_ID: &str = "panes.guide";
 
 pub struct MacOsPlatform {
     tray: Option<TrayState>,
@@ -204,6 +210,11 @@ where
                     return;
                 }
 
+                if event.id() == GUIDE_MENU_ID {
+                    show_guide(&menu_entries);
+                    return;
+                }
+
                 if let Some(invocation) = platform.invocation_for_menu_id(event.id()) {
                     handle_command(invocation);
                 }
@@ -253,7 +264,11 @@ fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<Strin
             .filter(|entry| entry.command.category() == *category)
         {
             let menu_id = command_menu_id(entry.command);
-            let item = MenuItem::with_id(menu_id.clone(), &entry.label, true, None);
+            let accelerator = entry
+                .accelerator
+                .as_deref()
+                .and_then(|accelerator| accelerator.parse::<Accelerator>().ok());
+            let item = MenuItem::with_id(menu_id.clone(), &entry.label, true, accelerator);
             submenu.append(&item).map_err(|error| {
                 native_error(
                     format!("failed to append {} menu item", entry.command.label()),
@@ -278,6 +293,14 @@ fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<Strin
     menu.append(&separator)
         .map_err(|error| native_error("failed to append menu separator", error))?;
 
+    let guide = MenuItem::with_id(GUIDE_MENU_ID, "Guide", true, None);
+    menu.append(&guide)
+        .map_err(|error| native_error("failed to append guide menu item", error))?;
+
+    let separator = PredefinedMenuItem::separator();
+    menu.append(&separator)
+        .map_err(|error| native_error("failed to append menu separator", error))?;
+
     let quit = MenuItem::with_id(QUIT_MENU_ID, "Quit Panes", true, None);
     menu.append(&quit)
         .map_err(|error| native_error("failed to append quit menu item", error))?;
@@ -296,6 +319,81 @@ fn parse_hotkey(binding: &HotkeyBinding) -> Result<HotKey, PlatformError> {
                 binding.command.label()
             ))
         })
+}
+
+/// Shows a native alert listing every enabled action and its shortcut.
+fn show_guide(entries: &[MenuEntry]) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        eprintln!("panes can only show the guide from the main thread");
+        return;
+    };
+
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str("panes commands"));
+    alert.setInformativeText(&NSString::from_str(&guide_text(entries)));
+
+    // Bring the modal panel to the front even though panes is an accessory
+    // app that never activates on its own.
+    #[allow(deprecated)]
+    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    let _ = alert.runModal();
+}
+
+fn guide_text(entries: &[MenuEntry]) -> String {
+    let mut text = String::new();
+
+    for category in CommandCategory::ALL {
+        let rows = entries
+            .iter()
+            .filter(|entry| entry.command.category() == *category)
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            continue;
+        }
+
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(category.label());
+        text.push('\n');
+        for entry in rows {
+            let shortcut = entry
+                .accelerator
+                .as_deref()
+                .map_or_else(|| "\u{2014}".to_owned(), pretty_accelerator);
+            text.push_str(&format!("{shortcut}\u{2002}\u{2002}{}\n", entry.label));
+        }
+    }
+
+    text
+}
+
+/// Formats an accelerator string like `Control+Alt+ArrowLeft` using macOS
+/// keyboard symbols.
+fn pretty_accelerator(accelerator: &str) -> String {
+    accelerator
+        .split('+')
+        .map(|part| match part {
+            "Control" | "Ctrl" => "\u{2303}",
+            "Alt" | "Option" => "\u{2325}",
+            "Shift" => "\u{21e7}",
+            "Super" | "Meta" | "Command" | "Cmd" => "\u{2318}",
+            "ArrowLeft" => "\u{2190}",
+            "ArrowRight" => "\u{2192}",
+            "ArrowUp" => "\u{2191}",
+            "ArrowDown" => "\u{2193}",
+            "Enter" | "Return" => "\u{23ce}",
+            "Backspace" => "\u{232b}",
+            "Escape" => "\u{238b}",
+            "Space" => "Space",
+            "Equal" => "=",
+            "Minus" => "-",
+            other => other
+                .strip_prefix("Digit")
+                .or_else(|| other.strip_prefix("Key"))
+                .unwrap_or(other),
+        })
+        .collect()
 }
 
 fn command_menu_id(command: Command) -> String {
@@ -347,6 +445,52 @@ mod tests {
                 )
             });
         }
+    }
+
+    #[test]
+    fn pretty_accelerator_uses_macos_symbols() {
+        assert_eq!(
+            pretty_accelerator("Control+Alt+ArrowLeft"),
+            "\u{2303}\u{2325}\u{2190}"
+        );
+        assert_eq!(
+            pretty_accelerator("Control+Alt+Shift+ArrowUp"),
+            "\u{2303}\u{2325}\u{21e7}\u{2191}"
+        );
+        assert_eq!(
+            pretty_accelerator("Control+Alt+Digit1"),
+            "\u{2303}\u{2325}1"
+        );
+        assert_eq!(pretty_accelerator("Control+Alt+U"), "\u{2303}\u{2325}U");
+        assert_eq!(pretty_accelerator("Control+Alt+Equal"), "\u{2303}\u{2325}=");
+    }
+
+    #[test]
+    fn guide_text_groups_actions_by_category_with_shortcuts() {
+        let entries = vec![
+            MenuEntry {
+                command: Command::LeftHalf,
+                label: "Left Half".to_owned(),
+                accelerator: Some("Control+Alt+ArrowLeft".to_owned()),
+            },
+            MenuEntry {
+                command: Command::CenterHalf,
+                label: "Center Half".to_owned(),
+                accelerator: None,
+            },
+            MenuEntry {
+                command: Command::Grow,
+                label: "Grow".to_owned(),
+                accelerator: Some("Control+Alt+Equal".to_owned()),
+            },
+        ];
+
+        let text = guide_text(&entries);
+
+        assert_eq!(
+            text,
+            "Halves\n\u{2303}\u{2325}\u{2190}\u{2002}\u{2002}Left Half\n\u{2014}\u{2002}\u{2002}Center Half\n\nResize\n\u{2303}\u{2325}=\u{2002}\u{2002}Grow\n"
+        );
     }
 
     #[test]

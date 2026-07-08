@@ -65,7 +65,6 @@ pub fn calculate(request: LayoutRequest, config: &LayoutConfig) -> LayoutResult 
             .with_origin(request.window.origin.x, screen.min_y()),
         Command::Grow => resize_from_center(request.window, config.resize_step),
         Command::Shrink => resize_from_center(request.window, -config.resize_step),
-        Command::NextDisplay | Command::PreviousDisplay => request.window.centered_in(screen),
     };
 
     LayoutResult {
@@ -203,9 +202,7 @@ fn apply_gap(rect: Rect, command: Command, gap: f64) -> Rect {
         | Command::MoveUp
         | Command::MoveDown
         | Command::Grow
-        | Command::Shrink
-        | Command::NextDisplay
-        | Command::PreviousDisplay => rect,
+        | Command::Shrink => rect,
         _ => rect.inset(gap, gap),
     }
 }
