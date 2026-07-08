@@ -30,20 +30,30 @@ pub(crate) fn screens() -> PlatformResult<Vec<ScreenInfo>> {
     Ok(screens)
 }
 
+/// Reads only the screen frames, skipping the per-screen name and work-area
+/// lookups that `screens` pays for; this runs on every command.
 pub(crate) fn coordinate_space() -> PlatformResult<CoordinateSpace> {
-    let frames = screens()?
-        .into_iter()
-        .map(|screen| screen.frame)
-        .collect::<Vec<_>>();
+    let mtm = main_thread_marker()?;
+    let screens = NSScreen::screens(mtm);
+    let count = screens.count();
+    let mut frames = Vec::with_capacity(count);
+
+    for index in 0..count {
+        frames.push(ns_rect_to_rect(screens.objectAtIndex(index).frame()));
+    }
 
     CoordinateSpace::from_screen_frames(&frames)
         .ok_or(PlatformError::NotFound("no macOS screens found"))
 }
 
-fn read_screens() -> PlatformResult<Vec<ScreenInfo>> {
-    let mtm = MainThreadMarker::new().ok_or_else(|| {
+fn main_thread_marker() -> PlatformResult<MainThreadMarker> {
+    MainThreadMarker::new().ok_or_else(|| {
         PlatformError::Native("macOS screen APIs must be called on the main thread".to_owned())
-    })?;
+    })
+}
+
+fn read_screens() -> PlatformResult<Vec<ScreenInfo>> {
+    let mtm = main_thread_marker()?;
     let screens = NSScreen::screens(mtm);
     let count = screens.count();
     let mut result = Vec::with_capacity(count);

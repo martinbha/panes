@@ -29,7 +29,7 @@ use objc2_app_kit::NSRunningApplication;
 use panes_core::{Rect, WindowId};
 use panes_platform::{PlatformError, PlatformResult, WindowInfo};
 
-use crate::screen;
+use crate::{coordinates::CoordinateSpace, screen};
 
 const ACCESSIBILITY_PERMISSION_ERROR: &str = "Enable Accessibility access for panes in System Settings > Privacy & Security > Accessibility, then restart panes";
 
@@ -85,7 +85,8 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
         return Ok(None);
     }
 
-    let info = window_info(&window, cache.known_id(&window))?;
+    let space = screen::coordinate_space()?;
+    let info = window_info(&window, space, cache.known_id(&window))?;
     cache.remember(info.id, window);
 
     Ok(Some(info))
@@ -113,7 +114,8 @@ pub(crate) fn set_window_rect(
         ));
     }
 
-    let native_rect = screen::coordinate_space()?.panes_rect_to_native(rect);
+    let space = screen::coordinate_space()?;
+    let native_rect = space.panes_rect_to_native(rect);
     let size = CGSize::new(native_rect.size.width, native_rect.size.height);
     let position = CGPoint::new(native_rect.origin.x, native_rect.origin.y);
 
@@ -141,7 +143,7 @@ pub(crate) fn set_window_rect(
         set_ax_size(&window, kAXSizeAttribute, size)?;
     }
 
-    window_rect(&window)
+    window_rect(&window, space)
 }
 
 /// Sub-pixel differences come from float round-tripping through the panes
@@ -188,7 +190,11 @@ fn ensure_accessibility_permission() -> PlatformResult<()> {
     }
 }
 
-fn window_info(window: &AXUIElement, known_id: Option<WindowId>) -> PlatformResult<WindowInfo> {
+fn window_info(
+    window: &AXUIElement,
+    space: CoordinateSpace,
+    known_id: Option<WindowId>,
+) -> PlatformResult<WindowInfo> {
     let pid = element_pid(window)?;
     let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid);
     let title = optional_cf_string(window, &AXAttribute::title())?.unwrap_or_default();
@@ -202,7 +208,7 @@ fn window_info(window: &AXUIElement, known_id: Option<WindowId>) -> PlatformResu
             .map(|bundle_id| bundle_id.to_string())
             .unwrap_or_else(|| format!("pid:{pid}")),
         title,
-        rect: window_rect(window)?,
+        rect: window_rect(window, space)?,
         is_resizable: is_size_settable(window),
         is_minimized: optional_cf_boolean(window, &AXAttribute::minimized())?.unwrap_or(false),
         is_hidden: app.as_ref().is_some_and(|app| app.isHidden()),
@@ -223,12 +229,12 @@ fn is_standard_window(window: &AXUIElement) -> PlatformResult<bool> {
     Ok(true)
 }
 
-fn window_rect(window: &AXUIElement) -> PlatformResult<Rect> {
+fn window_rect(window: &AXUIElement, space: CoordinateSpace) -> PlatformResult<Rect> {
     let position = ax_point(window, kAXPositionAttribute)?;
     let size = ax_size(window, kAXSizeAttribute)?;
     let native_rect = Rect::new(position.x, position.y, size.width, size.height);
 
-    Ok(screen::coordinate_space()?.native_rect_to_panes(native_rect))
+    Ok(space.native_rect_to_panes(native_rect))
 }
 
 fn window_id(window: &AXUIElement, pid: pid_t, title: &str) -> WindowId {
