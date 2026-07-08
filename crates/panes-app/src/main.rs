@@ -20,8 +20,8 @@ fn main() {
     panes_macos::run_keyboard_menu_app_with_handler(
         loaded.config.menu_entries,
         loaded.config.hotkey_bindings,
-        move |invocation| {
-            if let Err(error) = executor.execute(invocation) {
+        move |invocation, repeats| {
+            if let Err(error) = executor.execute_repeated(invocation, repeats) {
                 eprintln!(
                     "failed to execute {} command from {:?}: {error}",
                     invocation.command.label(),
