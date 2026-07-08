@@ -92,6 +92,11 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
     Ok(Some(info))
 }
 
+/// Callers are expected to reject minimized or non-resizable windows using
+/// the `WindowInfo` returned by `front_window`; re-reading those attributes
+/// here would cost two more synchronous round trips per command, and the AX
+/// writes below fail with a descriptive error anyway if the window state
+/// changed in between.
 pub(crate) fn set_window_rect(
     cache: &WindowCache,
     window_id: WindowId,
@@ -101,18 +106,6 @@ pub(crate) fn set_window_rect(
     let window = cache.get(window_id).ok_or(PlatformError::NotFound(
         "macOS window is not cached; read the front window before moving it",
     ))?;
-
-    if optional_cf_boolean(&window, &AXAttribute::minimized())?.unwrap_or(false) {
-        return Err(PlatformError::Unsupported(
-            "minimized macOS windows cannot be moved",
-        ));
-    }
-
-    if !is_size_settable(&window) {
-        return Err(PlatformError::Unsupported(
-            "macOS window does not allow resizing",
-        ));
-    }
 
     let space = screen::coordinate_space()?;
     let native_rect = space.panes_rect_to_native(rect);
