@@ -122,3 +122,62 @@ pub fn default_hotkey_bindings() -> Vec<HotkeyBinding> {
     })
     .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn menu_entries_cover_every_command_exactly_once() {
+        let entries = default_menu_entries();
+
+        let commands: Vec<Command> = entries.iter().map(|entry| entry.command).collect();
+        assert_eq!(commands, Command::ALL);
+
+        for entry in &entries {
+            assert_eq!(entry.label, entry.command.label());
+        }
+    }
+
+    #[test]
+    fn hotkey_bindings_bind_each_command_at_most_once() {
+        let bindings = default_hotkey_bindings();
+
+        let mut bound = HashSet::new();
+        for binding in &bindings {
+            assert!(
+                bound.insert(binding.command),
+                "{} is bound more than once",
+                binding.command.label()
+            );
+        }
+
+        let unbound: Vec<Command> = Command::ALL
+            .iter()
+            .copied()
+            .filter(|command| !bound.contains(command))
+            .collect();
+        assert_eq!(
+            unbound,
+            [Command::CenterHalf],
+            "only Center Half should ship without a default hotkey"
+        );
+    }
+
+    #[test]
+    fn hotkey_accelerators_are_unique() {
+        let bindings = default_hotkey_bindings();
+
+        let mut accelerators = HashSet::new();
+        for binding in &bindings {
+            assert!(
+                accelerators.insert(binding.accelerator.as_str().to_owned()),
+                "duplicate accelerator {} for {}",
+                binding.accelerator,
+                binding.command.label()
+            );
+        }
+    }
+}
