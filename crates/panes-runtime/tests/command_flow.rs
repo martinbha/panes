@@ -133,7 +133,9 @@ fn expected_rect(command: Command) -> Option<Rect> {
         Command::MoveUp => Rect::new(100.0, 700.0, 200.0, 100.0),
         Command::MoveDown => Rect::new(100.0, 0.0, 200.0, 100.0),
         Command::Grow => Rect::new(85.0, 85.0, 230.0, 130.0),
-        Command::Shrink => Rect::new(115.0, 115.0, 170.0, 70.0),
+        // The 200x100 window is already below the 25%-of-work-area shrink floor
+        // (250x200 here), so Shrink holds its size and only re-centers.
+        Command::Shrink => Rect::new(100.0, 100.0, 200.0, 100.0),
         Command::Restore => return None,
     };
     Some(rect)
