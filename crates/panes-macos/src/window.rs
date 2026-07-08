@@ -104,16 +104,20 @@ pub(crate) fn set_window_rect(
     }
 
     let native_rect = screen::coordinate_space()?.panes_rect_to_native(rect);
-    set_ax_size(
-        &window,
-        kAXSizeAttribute,
-        CGSize::new(native_rect.size.width, native_rect.size.height),
-    )?;
-    set_ax_point(
-        &window,
-        kAXPositionAttribute,
-        CGPoint::new(native_rect.origin.x, native_rect.origin.y),
-    )?;
+    let size = CGSize::new(native_rect.size.width, native_rect.size.height);
+    let position = CGPoint::new(native_rect.origin.x, native_rect.origin.y);
+
+    // Apply size, then position, then size again. macOS clamps a resize whose
+    // edges would overflow the screen from the window's *current* origin, so a
+    // lone size-then-move can leave a dimension clamped to the old position.
+    // Writing the size a second time — after the window sits at the target
+    // origin, where the full size fits — lets the requested frame stick. The
+    // final `window_rect` re-read still reports whatever actually held, so any
+    // legitimate app constraint (min/max sizes, Terminal's character grid)
+    // remains truthful in history. Mirrors Rectangle's `AccessibilityElement.setFrame`.
+    set_ax_size(&window, kAXSizeAttribute, size)?;
+    set_ax_point(&window, kAXPositionAttribute, position)?;
+    set_ax_size(&window, kAXSizeAttribute, size)?;
 
     window_rect(&window)
 }
