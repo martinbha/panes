@@ -195,10 +195,7 @@ fn zero_repeats_executes_once() {
         .execute_repeated(keyboard(Command::Grow), 0)
         .unwrap();
 
-    assert_eq!(
-        Some(execution.requested_rect),
-        expected_rect(Command::Grow)
-    );
+    assert_eq!(Some(execution.requested_rect), expected_rect(Command::Grow));
 }
 
 #[test]
