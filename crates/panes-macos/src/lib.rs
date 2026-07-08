@@ -99,17 +99,21 @@ impl NativePlatform for MacOsPlatform {
         let mut command_by_id = HashMap::with_capacity(bindings.len());
 
         for binding in bindings {
-            let hotkey = parse_hotkey(binding)?;
-            manager.register(hotkey).map_err(|error| {
-                native_error(
-                    format!(
-                        "failed to register hotkey {} for {}",
-                        binding.accelerator,
-                        binding.command.label()
-                    ),
-                    error,
-                )
-            })?;
+            let hotkey = match parse_hotkey(binding) {
+                Ok(hotkey) => hotkey,
+                Err(error) => {
+                    eprintln!("panes skipped a hotkey: {error:?}");
+                    continue;
+                }
+            };
+            if let Err(error) = manager.register(hotkey) {
+                eprintln!(
+                    "panes skipped hotkey {} for {}: {error}",
+                    binding.accelerator,
+                    binding.command.label()
+                );
+                continue;
+            }
             command_by_id.insert(hotkey.id(), binding.command);
             keys.push(hotkey);
         }
