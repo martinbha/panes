@@ -478,6 +478,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn coalesce_collapses_only_consecutive_identical_invocations() {
+        let grow = CommandInvocation {
+            command: Command::Grow,
+            source: CommandSource::Keyboard,
+        };
+        let shrink = CommandInvocation {
+            command: Command::Shrink,
+            source: CommandSource::Keyboard,
+        };
+
+        assert_eq!(coalesce_invocations([]), Vec::new());
+        assert_eq!(coalesce_invocations([grow]), vec![(grow, 1)]);
+        assert_eq!(coalesce_invocations([grow, grow, grow]), vec![(grow, 3)]);
+        assert_eq!(
+            coalesce_invocations([grow, grow, shrink, grow]),
+            vec![(grow, 2), (shrink, 1), (grow, 1)]
+        );
+    }
+
+    #[test]
     fn default_hotkey_bindings_all_parse() {
         for binding in default_hotkey_bindings() {
             parse_hotkey(&binding).unwrap_or_else(|error| {
