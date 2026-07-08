@@ -29,7 +29,7 @@ use objc2_app_kit::NSRunningApplication;
 use panes_core::{Rect, WindowId};
 use panes_platform::{PlatformError, PlatformResult, WindowInfo};
 
-use crate::screen;
+use crate::{coordinates::CoordinateSpace, screen};
 
 const ACCESSIBILITY_PERMISSION_ERROR: &str = "Enable Accessibility access for panes in System Settings > Privacy & Security > Accessibility, then restart panes";
 
@@ -45,6 +45,16 @@ impl WindowCache {
 
     pub(crate) fn get(&self, id: WindowId) -> Option<AXUIElement> {
         self.windows.borrow().get(&id).cloned()
+    }
+
+    /// AXUIElements that refer to the same window compare CFEqual, so a hit
+    /// here recovers the id assigned on an earlier command and skips the
+    /// whole-desktop `CGWindowListCopyWindowInfo` scan in `window_id`.
+    pub(crate) fn known_id(&self, window: &AXUIElement) -> Option<WindowId> {
+        self.windows
+            .borrow()
+            .iter()
+            .find_map(|(id, cached)| (cached == window).then_some(*id))
     }
 }
 
@@ -75,12 +85,18 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
         return Ok(None);
     }
 
-    let info = window_info(&window)?;
+    let space = screen::coordinate_space()?;
+    let info = window_info(&window, space, cache.known_id(&window))?;
     cache.remember(info.id, window);
 
     Ok(Some(info))
 }
 
+/// Callers are expected to reject minimized or non-resizable windows using
+/// the `WindowInfo` returned by `front_window`; re-reading those attributes
+/// here would cost two more synchronous round trips per command, and the AX
+/// writes below fail with a descriptive error anyway if the window state
+/// changed in between.
 pub(crate) fn set_window_rect(
     cache: &WindowCache,
     window_id: WindowId,
@@ -91,35 +107,43 @@ pub(crate) fn set_window_rect(
         "macOS window is not cached; read the front window before moving it",
     ))?;
 
-    if optional_cf_boolean(&window, &AXAttribute::minimized())?.unwrap_or(false) {
-        return Err(PlatformError::Unsupported(
-            "minimized macOS windows cannot be moved",
-        ));
-    }
-
-    if !is_size_settable(&window) {
-        return Err(PlatformError::Unsupported(
-            "macOS window does not allow resizing",
-        ));
-    }
-
-    let native_rect = screen::coordinate_space()?.panes_rect_to_native(rect);
+    let space = screen::coordinate_space()?;
+    let native_rect = space.panes_rect_to_native(rect);
     let size = CGSize::new(native_rect.size.width, native_rect.size.height);
     let position = CGPoint::new(native_rect.origin.x, native_rect.origin.y);
 
-    // Apply size, then position, then size again. macOS clamps a resize whose
-    // edges would overflow the screen from the window's *current* origin, so a
-    // lone size-then-move can leave a dimension clamped to the old position.
-    // Writing the size a second time — after the window sits at the target
-    // origin, where the full size fits — lets the requested frame stick. The
-    // final `window_rect` re-read still reports whatever actually held, so any
-    // legitimate app constraint (min/max sizes, Terminal's character grid)
-    // remains truthful in history. Mirrors Rectangle's `AccessibilityElement.setFrame`.
-    set_ax_size(&window, kAXSizeAttribute, size)?;
-    set_ax_point(&window, kAXPositionAttribute, position)?;
-    set_ax_size(&window, kAXSizeAttribute, size)?;
+    let current_position = ax_point(&window, kAXPositionAttribute)?;
+    let current_size = ax_size(&window, kAXSizeAttribute)?;
+    let position_changed = !coordinates_match(current_position.x, position.x)
+        || !coordinates_match(current_position.y, position.y);
+    let size_changed = !coordinates_match(current_size.width, size.width)
+        || !coordinates_match(current_size.height, size.height);
 
-    window_rect(&window)
+    // Apply position first, then size, skipping attributes that already
+    // match. Position writes are never clamped by macOS — only size writes
+    // are, and only against the screen edges from the window's *current*
+    // origin. Layout targets always fit their work area, so once the window
+    // sits at the target origin a single size write cannot be clamped. This
+    // needs at most one synchronous relayout in the target app (the expensive
+    // call) where the old size → position → size dance needed two, and a pure
+    // move needs none. The final `window_rect` re-read still reports whatever
+    // actually held, so any legitimate app constraint (min/max sizes,
+    // Terminal's character grid) remains truthful in history.
+    if position_changed {
+        set_ax_point(&window, kAXPositionAttribute, position)?;
+    }
+    if size_changed {
+        set_ax_size(&window, kAXSizeAttribute, size)?;
+    }
+
+    window_rect(&window, space)
+}
+
+/// Sub-pixel differences come from float round-tripping through the panes
+/// coordinate space, never from a real frame change, so treat them as equal
+/// and skip the synchronous write.
+fn coordinates_match(left: f64, right: f64) -> bool {
+    (left - right).abs() < 0.1
 }
 
 fn focused_application(system: &AXUIElement) -> PlatformResult<Option<AXUIElement>> {
@@ -159,11 +183,15 @@ fn ensure_accessibility_permission() -> PlatformResult<()> {
     }
 }
 
-fn window_info(window: &AXUIElement) -> PlatformResult<WindowInfo> {
+fn window_info(
+    window: &AXUIElement,
+    space: CoordinateSpace,
+    known_id: Option<WindowId>,
+) -> PlatformResult<WindowInfo> {
     let pid = element_pid(window)?;
     let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid);
     let title = optional_cf_string(window, &AXAttribute::title())?.unwrap_or_default();
-    let id = window_id(window, pid, &title);
+    let id = known_id.unwrap_or_else(|| window_id(window, pid, &title));
 
     Ok(WindowInfo {
         id,
@@ -173,7 +201,7 @@ fn window_info(window: &AXUIElement) -> PlatformResult<WindowInfo> {
             .map(|bundle_id| bundle_id.to_string())
             .unwrap_or_else(|| format!("pid:{pid}")),
         title,
-        rect: window_rect(window)?,
+        rect: window_rect(window, space)?,
         is_resizable: is_size_settable(window),
         is_minimized: optional_cf_boolean(window, &AXAttribute::minimized())?.unwrap_or(false),
         is_hidden: app.as_ref().is_some_and(|app| app.isHidden()),
@@ -194,12 +222,12 @@ fn is_standard_window(window: &AXUIElement) -> PlatformResult<bool> {
     Ok(true)
 }
 
-fn window_rect(window: &AXUIElement) -> PlatformResult<Rect> {
+fn window_rect(window: &AXUIElement, space: CoordinateSpace) -> PlatformResult<Rect> {
     let position = ax_point(window, kAXPositionAttribute)?;
     let size = ax_size(window, kAXSizeAttribute)?;
     let native_rect = Rect::new(position.x, position.y, size.width, size.height);
 
-    Ok(screen::coordinate_space()?.native_rect_to_panes(native_rect))
+    Ok(space.native_rect_to_panes(native_rect))
 }
 
 fn window_id(window: &AXUIElement, pid: pid_t, title: &str) -> WindowId {

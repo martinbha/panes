@@ -169,6 +169,49 @@ fn every_command_produces_its_expected_rect() {
 }
 
 #[test]
+fn repeated_execution_iterates_layout_but_applies_one_frame_change() {
+    let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+    let execution = executor
+        .execute_repeated(keyboard(Command::Grow), 2)
+        .unwrap();
+
+    // Two Grow steps from the 200x100 window at (100, 100): 30px per step on
+    // each dimension, re-centered each time, exactly as two sequential
+    // executions would produce.
+    let expected = Rect::new(70.0, 70.0, 260.0, 160.0);
+    assert_eq!(execution.requested_rect, expected);
+    assert_eq!(
+        executor.platform().set_calls.borrow().as_slice(),
+        &[(WINDOW_ID, expected)]
+    );
+}
+
+#[test]
+fn zero_repeats_executes_once() {
+    let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+    let execution = executor
+        .execute_repeated(keyboard(Command::Grow), 0)
+        .unwrap();
+
+    assert_eq!(Some(execution.requested_rect), expected_rect(Command::Grow));
+}
+
+#[test]
+fn repeated_restore_runs_once_against_history() {
+    let original = Rect::new(100.0, 100.0, 200.0, 100.0);
+    let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+    executor.execute(keyboard(Command::LeftHalf)).unwrap();
+    let restore = executor
+        .execute_repeated(keyboard(Command::Restore), 5)
+        .unwrap();
+
+    assert_eq!(restore.requested_rect, original);
+}
+
+#[test]
 fn menu_and_keyboard_invocations_share_history_for_restore() {
     let original = Rect::new(100.0, 100.0, 200.0, 100.0);
     let mut executor = CommandExecutor::with_default_config(FakePlatform::new());

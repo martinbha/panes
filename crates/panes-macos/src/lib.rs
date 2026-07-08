@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Display};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt::Display,
+    sync::{Arc, Mutex},
+};
 
 mod coordinates;
 mod screen;
@@ -157,22 +161,28 @@ pub fn run_keyboard_menu_app() -> ! {
     run_keyboard_menu_app_with_handler(
         default_menu_entries(),
         default_hotkey_bindings(),
-        |invocation| {
+        |invocation, repeats| {
             println!(
-                "received {:?} command from {:?}",
+                "received {:?} command from {:?} (x{repeats})",
                 invocation.command, invocation.source
             );
         },
     )
 }
 
+/// Runs the tray-menu and hotkey event loop, calling `handle_command` with
+/// each invocation and the number of identical presses it stands for. Hotkey
+/// presses that arrive while an earlier command still blocks the main thread
+/// are queued and drained in one batch; consecutive identical invocations
+/// collapse into a single call with `repeats > 1` so the handler can apply
+/// one combined frame change instead of replaying the burst.
 pub fn run_keyboard_menu_app_with_handler<F>(
     menu_entries: Vec<MenuEntry>,
     hotkey_bindings: Vec<HotkeyBinding>,
     mut handle_command: F,
 ) -> !
 where
-    F: FnMut(CommandInvocation) + 'static,
+    F: FnMut(CommandInvocation, usize) + 'static,
 {
     // Run as an accessory app (like LSUIElement): panes never takes focus,
     // so the frontmost application keeps its focused window while the user
@@ -185,8 +195,16 @@ where
     }));
 
     let proxy = event_loop.create_proxy();
-    GlobalHotKeyEvent::set_event_handler(Some(move |event| {
-        let _ = proxy.send_event(UserEvent::Hotkey(event));
+    let pending_hotkeys: Arc<Mutex<VecDeque<u32>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let hotkey_queue = Arc::clone(&pending_hotkeys);
+    GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+        if event.state() != HotKeyState::Pressed {
+            return;
+        }
+        if let Ok(mut queue) = hotkey_queue.lock() {
+            queue.push_back(event.id());
+        }
+        let _ = proxy.send_event(UserEvent::HotkeysReady);
     }));
 
     let mut platform = MacOsPlatform::new();
@@ -216,16 +234,22 @@ where
                 }
 
                 if let Some(invocation) = platform.invocation_for_menu_id(event.id()) {
-                    handle_command(invocation);
+                    handle_command(invocation, 1);
                 }
             }
-            Event::UserEvent(UserEvent::Hotkey(event)) => {
-                if event.state() != HotKeyState::Pressed {
-                    return;
-                }
+            Event::UserEvent(UserEvent::HotkeysReady) => {
+                // One wake-up per press is sent, but the first one drains the
+                // whole queue, so later wake-ups usually find it empty.
+                let ids: Vec<u32> = pending_hotkeys
+                    .lock()
+                    .map(|mut queue| queue.drain(..).collect())
+                    .unwrap_or_default();
+                let invocations = ids
+                    .into_iter()
+                    .filter_map(|id| platform.invocation_for_hotkey_id(id));
 
-                if let Some(invocation) = platform.invocation_for_hotkey_id(event.id()) {
-                    handle_command(invocation);
+                for (invocation, repeats) in coalesce_invocations(invocations) {
+                    handle_command(invocation, repeats);
                 }
             }
             _ => {}
@@ -248,7 +272,26 @@ struct RegisteredHotkeys {
 #[derive(Debug)]
 enum UserEvent {
     Menu(MenuEvent),
-    Hotkey(GlobalHotKeyEvent),
+    HotkeysReady,
+}
+
+/// Collapses consecutive identical invocations into `(invocation, repeats)`
+/// runs so a burst of queued presses of the same hotkey becomes one handler
+/// call — and therefore one native frame change — instead of replaying every
+/// press individually.
+fn coalesce_invocations(
+    invocations: impl IntoIterator<Item = CommandInvocation>,
+) -> Vec<(CommandInvocation, usize)> {
+    let mut runs: Vec<(CommandInvocation, usize)> = Vec::new();
+
+    for invocation in invocations {
+        match runs.last_mut() {
+            Some((last, repeats)) if *last == invocation => *repeats += 1,
+            _ => runs.push((invocation, 1)),
+        }
+    }
+
+    runs
 }
 
 fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<String, Command>)> {
@@ -433,6 +476,26 @@ fn native_error(context: impl Display, error: impl Display) -> PlatformError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coalesce_collapses_only_consecutive_identical_invocations() {
+        let grow = CommandInvocation {
+            command: Command::Grow,
+            source: CommandSource::Keyboard,
+        };
+        let shrink = CommandInvocation {
+            command: Command::Shrink,
+            source: CommandSource::Keyboard,
+        };
+
+        assert_eq!(coalesce_invocations([]), Vec::new());
+        assert_eq!(coalesce_invocations([grow]), vec![(grow, 1)]);
+        assert_eq!(coalesce_invocations([grow, grow, grow]), vec![(grow, 3)]);
+        assert_eq!(
+            coalesce_invocations([grow, grow, shrink, grow]),
+            vec![(grow, 2), (shrink, 1), (grow, 1)]
+        );
+    }
 
     #[test]
     fn default_hotkey_bindings_all_parse() {
