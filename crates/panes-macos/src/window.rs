@@ -46,6 +46,16 @@ impl WindowCache {
     pub(crate) fn get(&self, id: WindowId) -> Option<AXUIElement> {
         self.windows.borrow().get(&id).cloned()
     }
+
+    /// AXUIElements that refer to the same window compare CFEqual, so a hit
+    /// here recovers the id assigned on an earlier command and skips the
+    /// whole-desktop `CGWindowListCopyWindowInfo` scan in `window_id`.
+    pub(crate) fn known_id(&self, window: &AXUIElement) -> Option<WindowId> {
+        self.windows
+            .borrow()
+            .iter()
+            .find_map(|(id, cached)| (cached == window).then_some(*id))
+    }
 }
 
 pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowInfo>> {
@@ -75,7 +85,7 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
         return Ok(None);
     }
 
-    let info = window_info(&window)?;
+    let info = window_info(&window, cache.known_id(&window))?;
     cache.remember(info.id, window);
 
     Ok(Some(info))
@@ -178,11 +188,11 @@ fn ensure_accessibility_permission() -> PlatformResult<()> {
     }
 }
 
-fn window_info(window: &AXUIElement) -> PlatformResult<WindowInfo> {
+fn window_info(window: &AXUIElement, known_id: Option<WindowId>) -> PlatformResult<WindowInfo> {
     let pid = element_pid(window)?;
     let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid);
     let title = optional_cf_string(window, &AXAttribute::title())?.unwrap_or_default();
-    let id = window_id(window, pid, &title);
+    let id = known_id.unwrap_or_else(|| window_id(window, pid, &title));
 
     Ok(WindowInfo {
         id,
