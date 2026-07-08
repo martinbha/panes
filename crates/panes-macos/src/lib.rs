@@ -20,7 +20,9 @@ use tao::{
 };
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
-    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{
+        Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu, accelerator::Accelerator,
+    },
 };
 
 const QUIT_MENU_ID: &str = "panes.quit";
@@ -253,7 +255,11 @@ fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<Strin
             .filter(|entry| entry.command.category() == *category)
         {
             let menu_id = command_menu_id(entry.command);
-            let item = MenuItem::with_id(menu_id.clone(), &entry.label, true, None);
+            let accelerator = entry
+                .accelerator
+                .as_deref()
+                .and_then(|accelerator| accelerator.parse::<Accelerator>().ok());
+            let item = MenuItem::with_id(menu_id.clone(), &entry.label, true, accelerator);
             submenu.append(&item).map_err(|error| {
                 native_error(
                     format!("failed to append {} menu item", entry.command.label()),

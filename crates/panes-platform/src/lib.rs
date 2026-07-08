@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use panes_core::{Command, Point, Rect, WindowId};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -38,6 +40,7 @@ pub struct CommandInvocation {
 pub struct MenuEntry {
     pub command: Command,
     pub label: String,
+    pub accelerator: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,12 +77,18 @@ pub trait NativePlatform {
 
 #[must_use]
 pub fn default_menu_entries() -> Vec<MenuEntry> {
+    let accelerators: HashMap<Command, String> = default_hotkey_bindings()
+        .into_iter()
+        .map(|binding| (binding.command, binding.accelerator))
+        .collect();
+
     panes_core::Command::ALL
         .iter()
         .copied()
         .map(|command| MenuEntry {
             command,
             label: command.label().to_owned(),
+            accelerator: accelerators.get(&command).cloned(),
         })
         .collect()
 }
@@ -134,8 +143,14 @@ mod tests {
         let commands: Vec<Command> = entries.iter().map(|entry| entry.command).collect();
         assert_eq!(commands, Command::ALL);
 
+        let bindings: HashMap<Command, String> = default_hotkey_bindings()
+            .into_iter()
+            .map(|binding| (binding.command, binding.accelerator))
+            .collect();
+
         for entry in &entries {
             assert_eq!(entry.label, entry.command.label());
+            assert_eq!(entry.accelerator, bindings.get(&entry.command).cloned());
         }
     }
 

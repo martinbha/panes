@@ -231,9 +231,19 @@ fn resolve(file: ConfigFile) -> (AppConfig, Vec<ConfigIssue>) {
     let disabled = resolve_disabled(&file.commands, &mut issues);
     let hotkey_bindings = resolve_hotkeys(&file.hotkeys, &disabled, &mut issues);
 
-    let menu_entries = default_menu_entries()
-        .into_iter()
-        .filter(|entry| !disabled.contains(&entry.command))
+    let accelerators: HashMap<Command, String> = hotkey_bindings
+        .iter()
+        .map(|binding| (binding.command, binding.accelerator.clone()))
+        .collect();
+    let menu_entries = Command::ALL
+        .iter()
+        .copied()
+        .filter(|command| !disabled.contains(command))
+        .map(|command| MenuEntry {
+            command,
+            label: command.label().to_owned(),
+            accelerator: accelerators.get(&command).cloned(),
+        })
         .collect();
 
     (
@@ -418,6 +428,14 @@ mod tests {
         parse(source).expect("config should parse")
     }
 
+    fn menu_accelerator_for(config: &AppConfig, command: Command) -> Option<&str> {
+        config
+            .menu_entries
+            .iter()
+            .find(|entry| entry.command == command)
+            .and_then(|entry| entry.accelerator.as_deref())
+    }
+
     fn accelerator_for(config: &AppConfig, command: Command) -> Option<&str> {
         config
             .hotkey_bindings
@@ -502,6 +520,10 @@ mod tests {
             accelerator_for(&config, Command::LeftHalf),
             Some("Control+Alt+ArrowLeft")
         );
+        assert_eq!(
+            menu_accelerator_for(&config, Command::Maximize),
+            Some("Control+Shift+M")
+        );
     }
 
     #[test]
@@ -510,6 +532,7 @@ mod tests {
 
         assert_eq!(issues, Vec::new());
         assert_eq!(accelerator_for(&config, Command::Maximize), None);
+        assert_eq!(menu_accelerator_for(&config, Command::Maximize), None);
         assert!(
             config
                 .menu_entries
