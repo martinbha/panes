@@ -62,6 +62,21 @@ impl<P: NativePlatform> CommandExecutor<P> {
         &mut self,
         invocation: CommandInvocation,
     ) -> CommandExecutionResult<CommandExecution> {
+        self.execute_repeated(invocation, 1)
+    }
+
+    /// Executes `invocation` as if it were invoked `repeats` times in a row,
+    /// but applies only one native frame change. The layout math is iterated
+    /// in memory, so the result is exactly what `repeats` sequential
+    /// executions would produce — this lets hotkey presses that queued up
+    /// while an earlier command was executing collapse into a single
+    /// synchronous window update. `Restore` is idempotent against history and
+    /// always runs once.
+    pub fn execute_repeated(
+        &mut self,
+        invocation: CommandInvocation,
+        repeats: usize,
+    ) -> CommandExecutionResult<CommandExecution> {
         let window = self
             .platform
             .front_window()
@@ -85,15 +100,19 @@ impl<P: NativePlatform> CommandExecutor<P> {
                     window_id: window.id,
                 })?
         } else {
-            calculate(
-                LayoutRequest {
-                    command: invocation.command,
-                    window: window.rect,
-                    screen: screen.work_area,
-                },
-                &self.config,
-            )
-            .rect
+            let mut rect = window.rect;
+            for _ in 0..repeats.max(1) {
+                rect = calculate(
+                    LayoutRequest {
+                        command: invocation.command,
+                        window: rect,
+                        screen: screen.work_area,
+                    },
+                    &self.config,
+                )
+                .rect;
+            }
+            rect
         };
 
         let applied_rect = self
