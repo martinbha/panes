@@ -97,6 +97,11 @@ impl Command {
     }
 
     #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|command| command.id() == id)
+    }
+
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::LeftHalf => "Left Half",
@@ -194,5 +199,24 @@ impl CommandCategory {
             Self::Move => "Move",
             Self::Resize => "Resize",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_id_round_trips_every_command() {
+        for &command in Command::ALL {
+            assert_eq!(Command::from_id(command.id()), Some(command));
+        }
+    }
+
+    #[test]
+    fn from_id_rejects_unknown_ids() {
+        assert_eq!(Command::from_id("left-halff"), None);
+        assert_eq!(Command::from_id(""), None);
+        assert_eq!(Command::from_id("Left Half"), None);
     }
 }
