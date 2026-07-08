@@ -63,8 +63,8 @@ pub fn calculate(request: LayoutRequest, config: &LayoutConfig) -> LayoutResult 
         Command::MoveDown => request
             .window
             .with_origin(request.window.origin.x, screen.min_y()),
-        Command::Grow => resize_from_center(request.window, config.resize_step),
-        Command::Shrink => resize_from_center(request.window, -config.resize_step),
+        Command::Grow => resize_from_center(request.window, config.resize_step, screen),
+        Command::Shrink => resize_from_center(request.window, -config.resize_step, screen),
     };
 
     LayoutResult {
@@ -177,15 +177,33 @@ fn almost_maximize(screen: Rect, config: &LayoutConfig) -> Rect {
     Rect::new(screen.min_x(), screen.min_y(), width, height).centered_in(screen)
 }
 
-fn resize_from_center(window: Rect, delta: f64) -> Rect {
-    let width = (window.size.width + delta).max(1.0);
-    let height = (window.size.height + delta).max(1.0);
-    Rect::new(
-        window.mid_x() - width / 2.0,
-        window.mid_y() - height / 2.0,
-        width,
-        height,
-    )
+/// Fraction of the work area, per dimension, below which Shrink will not take a
+/// window. Core cannot see per-app accessibility minimums, so this keeps
+/// repeated Shrink presses from collapsing a window toward unusability.
+const SHRINK_FLOOR_FRACTION: f64 = 0.25;
+
+/// Resize `window` by `delta` on each dimension while keeping it centered, then
+/// clamp it into `screen` (the work area). Grow caps each dimension at the work
+/// area — at the cap a further Grow is a no-op equal to Maximize — and the
+/// origin clamp lets growth continue in the available direction once an edge
+/// meets the boundary. Shrink stops at [`SHRINK_FLOOR_FRACTION`] of the work
+/// area. Both converge instead of running away.
+fn resize_from_center(window: Rect, delta: f64, screen: Rect) -> Rect {
+    let width = clamp_dimension(window.size.width, delta, screen.size.width);
+    let height = clamp_dimension(window.size.height, delta, screen.size.height);
+    // width/height never exceed the work area, so the upper bounds below are
+    // always >= the lower bounds and `clamp` cannot panic.
+    let x = (window.mid_x() - width / 2.0).clamp(screen.min_x(), screen.max_x() - width);
+    let y = (window.mid_y() - height / 2.0).clamp(screen.min_y(), screen.max_y() - height);
+    Rect::new(x, y, width, height)
+}
+
+/// Clamp a resized dimension between the shrink floor and the work-area extent.
+/// The floor is capped at the current size so an already-tiny window is never
+/// snapped *up* on Shrink; it simply stops shrinking.
+fn clamp_dimension(current: f64, delta: f64, available: f64) -> f64 {
+    let floor = (available * SHRINK_FLOOR_FRACTION).min(current);
+    (current + delta).clamp(floor, available)
 }
 
 fn apply_gap(rect: Rect, command: Command, gap: f64) -> Rect {
@@ -281,6 +299,62 @@ mod tests {
         );
 
         assert_eq!(result.rect, Rect::new(0.0, 800.0, 900.0, 400.0));
+    }
+
+    fn resize(command: Command, window: Rect) -> Rect {
+        calculate(
+            LayoutRequest {
+                command,
+                window,
+                screen: screen(),
+            },
+            &LayoutConfig::default(),
+        )
+        .rect
+    }
+
+    #[test]
+    fn grow_near_an_edge_stays_within_the_work_area() {
+        // A window pinned against the right edge grows leftward once its right
+        // edge meets the boundary instead of pushing past it.
+        let result = resize(Command::Grow, Rect::new(1000.0, 400.0, 200.0, 200.0));
+
+        assert_eq!(result, Rect::new(980.0, 385.0, 230.0, 230.0));
+        assert!(result.max_x() <= screen().max_x());
+        assert!(result.min_x() >= screen().min_x());
+    }
+
+    #[test]
+    fn grow_converges_to_the_work_area_and_stops() {
+        let mut rect = window();
+        for _ in 0..200 {
+            rect = resize(Command::Grow, rect);
+        }
+
+        assert_eq!(rect, screen());
+        // At the cap a further Grow is a no-op equal to Maximize.
+        assert_eq!(resize(Command::Grow, rect), screen());
+    }
+
+    #[test]
+    fn shrink_converges_to_the_floor_and_stops() {
+        let mut rect = screen();
+        for _ in 0..200 {
+            rect = resize(Command::Shrink, rect);
+        }
+
+        // 25% of the 1200x900 work area, centered.
+        assert_eq!(rect, Rect::new(460.0, 357.5, 300.0, 225.0));
+        // At the floor a further Shrink is a no-op.
+        assert_eq!(resize(Command::Shrink, rect), rect);
+    }
+
+    #[test]
+    fn shrink_leaves_a_sub_floor_window_alone() {
+        // Already smaller than the floor: Shrink must not snap it back up.
+        let small = Rect::new(500.0, 400.0, 200.0, 150.0);
+
+        assert_eq!(resize(Command::Shrink, small), small);
     }
 
     #[test]
