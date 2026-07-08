@@ -46,8 +46,6 @@ Expected behavior uses the default config (no gaps, 0.5 splits).
 | Maximize Height | ⌃⌥H | Full height, width and x unchanged | ☐ |
 | Center | ⌃⌥C | Window centered, size unchanged | ☐ |
 | Restore | ⌃⌥⌫ | Window returns to its rect before the first panes command | ☐ |
-| Next Display | ⌃⌥N | Window centers on the next display (single display: no visible change) | ☐ |
-| Previous Display | ⌃⌥P | Window centers on the previous display | ☐ |
 | Move Left | ⌃⌥⇧← | Window flush against left edge, size unchanged | ☐ |
 | Move Right | ⌃⌥⇧→ | Window flush against right edge | ☐ |
 | Move Up | ⌃⌥⇧↑ | Window flush against top edge | ☐ |
@@ -69,7 +67,6 @@ Requires at least two displays. Repeat with displays arranged side by side.
 
 | Scenario | Expected result | Pass |
 | --- | --- | --- |
-| Next Display / Previous Display | Window centers on the adjacent display; wraps at the ends | ☐ |
 | Tiling command on secondary display | Rect computed against that display's work area | ☐ |
 | Window spanning both displays | Command targets the display with the larger overlap | ☐ |
 | Focused window on display A, cursor on display B | Commands act on the focused window's display | ☐ |
