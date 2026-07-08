@@ -4,9 +4,10 @@ use accessibility::{AXAttribute, AXUIElement, Error as AccessibilityError};
 use accessibility_sys::{
     AXError, AXIsProcessTrustedWithOptions, AXUIElementGetPid, AXUIElementSetAttributeValue,
     AXValueCreate, AXValueGetType, AXValueGetTypeID, AXValueGetValue, AXValueRef, error_string,
-    kAXErrorAPIDisabled, kAXErrorAttributeUnsupported, kAXErrorNoValue, kAXPositionAttribute,
-    kAXSizeAttribute, kAXStandardWindowSubrole, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint,
-    kAXValueTypeCGSize, kAXWindowRole, pid_t,
+    kAXErrorAPIDisabled, kAXErrorAttributeUnsupported, kAXErrorNoValue,
+    kAXFocusedApplicationAttribute, kAXPositionAttribute, kAXSizeAttribute,
+    kAXStandardWindowSubrole, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint, kAXValueTypeCGSize,
+    kAXWindowRole, pid_t,
 };
 use core_foundation::{
     array::CFArray,
@@ -50,9 +51,16 @@ impl WindowCache {
 pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowInfo>> {
     ensure_accessibility_permission()?;
 
+    // AXFocusedWindow only exists on application elements, so resolve the
+    // focused application first; asking the system-wide element for it
+    // always fails with kAXErrorAttributeUnsupported.
     let system = AXUIElement::system_wide();
     let _ = system.set_messaging_timeout(1.0);
-    let window = match system.attribute(&AXAttribute::focused_window()) {
+    let Some(application) = focused_application(&system)? else {
+        return Ok(None);
+    };
+    let _ = application.set_messaging_timeout(1.0);
+    let window = match application.attribute(&AXAttribute::focused_window()) {
         Ok(window) => window,
         Err(error) if optional_accessibility_error(&error) => return Ok(None),
         Err(error) => {
@@ -108,6 +116,29 @@ pub(crate) fn set_window_rect(
     )?;
 
     window_rect(&window)
+}
+
+fn focused_application(system: &AXUIElement) -> PlatformResult<Option<AXUIElement>> {
+    let attribute = AXAttribute::<CFType>::new(&CFString::from_static_string(
+        kAXFocusedApplicationAttribute,
+    ));
+    let value = match system.attribute(&attribute) {
+        Ok(value) => value,
+        Err(error) if optional_accessibility_error(&error) => return Ok(None),
+        Err(error) => {
+            return Err(map_accessibility_error(
+                "failed to read focused macOS application",
+                error,
+            ));
+        }
+    };
+
+    match value.downcast_into::<AXUIElement>() {
+        Some(application) => Ok(Some(application)),
+        None => Err(PlatformError::Native(
+            "focused macOS application was not an accessibility element".to_owned(),
+        )),
+    }
 }
 
 fn ensure_accessibility_permission() -> PlatformResult<()> {
