@@ -367,16 +367,17 @@ fn resolve_hotkeys(
             continue;
         };
 
+        if accelerator.trim().is_empty() {
+            accelerators.remove(&command);
+            continue;
+        }
+
         if disabled.contains(&command) {
             issues.push(ConfigIssue::DisabledCommandBound { id: id.clone() });
             continue;
         }
 
-        if accelerator.trim().is_empty() {
-            accelerators.remove(&command);
-        } else {
-            accelerators.insert(command, accelerator.clone());
-        }
+        accelerators.insert(command, accelerator.clone());
     }
 
     let mut bindings = Vec::new();
@@ -570,6 +571,20 @@ mod tests {
                 id: "top-left".to_owned(),
             }]
         );
+        assert_eq!(accelerator_for(&config, Command::TopLeft), None);
+    }
+
+    #[test]
+    fn unbinding_a_disabled_command_is_silent() {
+        let (config, issues) = parsed(
+            "[hotkeys]\n\
+             top-left = \"\"\n\
+             \n\
+             [commands]\n\
+             disabled = [\"top-left\"]\n",
+        );
+
+        assert_eq!(issues, Vec::new());
         assert_eq!(accelerator_for(&config, Command::TopLeft), None);
     }
 
