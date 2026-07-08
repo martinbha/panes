@@ -322,6 +322,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_hotkey_bindings_all_parse() {
+        for binding in default_hotkey_bindings() {
+            parse_hotkey(&binding).unwrap_or_else(|error| {
+                panic!(
+                    "default accelerator {} for {} does not parse: {error:?}",
+                    binding.accelerator,
+                    binding.command.label()
+                )
+            });
+        }
+    }
+
+    #[test]
     fn command_menu_ids_are_namespaced() {
         assert_eq!(
             command_menu_id(Command::LeftHalf),
