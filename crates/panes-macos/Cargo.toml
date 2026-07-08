@@ -16,6 +16,9 @@ global-hotkey = { version = "0.8.0", default-features = false }
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "libc",
+    "NSAlert",
+    "NSApplication",
+    "NSResponder",
     "NSRunningApplication",
     "NSScreen",
     "objc2-core-graphics",
