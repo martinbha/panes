@@ -16,6 +16,7 @@ use panes_platform::{
 use tao::{
     event::{Event, StartCause},
     event_loop::{ControlFlow, EventLoopBuilder},
+    platform::macos::{ActivationPolicy, EventLoopExtMacOS},
 };
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
@@ -167,7 +168,11 @@ pub fn run_keyboard_menu_app_with_handler<F>(
 where
     F: FnMut(CommandInvocation) + 'static,
 {
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // Run as an accessory app (like LSUIElement): panes never takes focus,
+    // so the frontmost application keeps its focused window while the user
+    // clicks the tray menu, and no Dock icon appears.
+    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    event_loop.set_activation_policy(ActivationPolicy::Accessory);
     let proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = proxy.send_event(UserEvent::Menu(event));
