@@ -42,3 +42,23 @@ the file and problem.
 cargo test
 cargo run -p panes-app
 ```
+
+## macOS app bundle
+
+On macOS, create a double-clickable release app with:
+
+```bash
+scripts/bundle-macos.sh
+```
+
+The command creates `dist/Panes.app`. It is an unsigned local build intended
+for development and manual testing; drag it to `/Applications` if you want to
+keep it there. Panes runs as a menu-bar-only app, so it does not appear in the
+Dock.
+
+The first launch requires Accessibility access for `Panes` in System Settings
+→ Privacy & Security → Accessibility. Rebuilds and changes to the app’s
+location can require granting access again.
+
+For an app intended to leave the development machine, sign and notarize the
+bundle with an Apple Developer certificate before distributing it.
