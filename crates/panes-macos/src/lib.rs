@@ -461,12 +461,33 @@ fn panes_icon() -> PlatformResult<Icon> {
 }
 
 fn is_icon_stroke(x: usize, y: usize) -> bool {
-    let in_bounds = (5..=26).contains(&x) && (5..=26).contains(&y);
-    let outer = x == 5 || x == 26 || y == 5 || y == 26;
-    let vertical_divider = (15..=16).contains(&x) && (6..=25).contains(&y);
-    let horizontal_divider = (15..=16).contains(&y) && (6..=25).contains(&x);
+    let outer_frame = rounded_rect_contains(x, y, 5, 5, 26, 26, 5)
+        && !rounded_rect_contains(x, y, 8, 8, 23, 23, 2);
+    let vertical_divider = (14..=17).contains(&x) && (8..=23).contains(&y);
+    let horizontal_divider = (14..=17).contains(&y) && (8..=23).contains(&x);
 
-    in_bounds && (outer || vertical_divider || horizontal_divider)
+    outer_frame || vertical_divider || horizontal_divider
+}
+
+fn rounded_rect_contains(
+    x: usize,
+    y: usize,
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+    radius: usize,
+) -> bool {
+    if !(left..=right).contains(&x) || !(top..=bottom).contains(&y) {
+        return false;
+    }
+
+    let nearest_x = x.clamp(left + radius, right - radius);
+    let nearest_y = y.clamp(top + radius, bottom - radius);
+    let horizontal_distance = x.abs_diff(nearest_x);
+    let vertical_distance = y.abs_diff(nearest_y);
+
+    horizontal_distance.pow(2) + vertical_distance.pow(2) <= radius.pow(2)
 }
 
 fn native_error(context: impl Display, error: impl Display) -> PlatformError {
@@ -565,9 +586,14 @@ mod tests {
     }
 
     #[test]
-    fn tray_icon_has_visible_pixels() {
-        assert!(is_icon_stroke(5, 5));
-        assert!(is_icon_stroke(15, 20));
+    fn tray_icon_uses_a_rounded_thick_frame_and_dividers() {
+        assert!(!is_icon_stroke(5, 5));
+        assert!(is_icon_stroke(10, 5));
+        assert!(is_icon_stroke(5, 10));
+        assert!(is_icon_stroke(7, 10));
+        assert!(!is_icon_stroke(8, 10));
+        assert!(is_icon_stroke(15, 10));
+        assert!(is_icon_stroke(10, 15));
         assert!(!is_icon_stroke(0, 0));
         assert!(!is_icon_stroke(10, 10));
     }
