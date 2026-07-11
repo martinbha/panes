@@ -449,10 +449,8 @@ fn panes_icon() -> PlatformResult<Icon> {
 
     for y in 0..SIZE {
         for x in 0..SIZE {
-            if is_icon_stroke(x, y) {
-                let offset = (y * SIZE + x) * 4;
-                rgba[offset + 3] = 255;
-            }
+            let offset = (y * SIZE + x) * 4;
+            rgba[offset + 3] = icon_alpha(x, y);
         }
     }
 
@@ -460,13 +458,52 @@ fn panes_icon() -> PlatformResult<Icon> {
         .map_err(|error| native_error("failed to create tray icon", error))
 }
 
-fn is_icon_stroke(x: usize, y: usize) -> bool {
-    let in_bounds = (5..=26).contains(&x) && (5..=26).contains(&y);
-    let outer = x == 5 || x == 26 || y == 5 || y == 26;
-    let vertical_divider = (15..=16).contains(&x) && (6..=25).contains(&y);
-    let horizontal_divider = (15..=16).contains(&y) && (6..=25).contains(&x);
+fn icon_alpha(x: usize, y: usize) -> u8 {
+    const SAMPLES_PER_AXIS: usize = 4;
+    let mut covered_samples = 0;
 
-    in_bounds && (outer || vertical_divider || horizontal_divider)
+    for sample_y in 0..SAMPLES_PER_AXIS {
+        for sample_x in 0..SAMPLES_PER_AXIS {
+            let point_x = x as f32 + (sample_x as f32 + 0.5) / SAMPLES_PER_AXIS as f32;
+            let point_y = y as f32 + (sample_y as f32 + 0.5) / SAMPLES_PER_AXIS as f32;
+            if icon_contains(point_x, point_y) {
+                covered_samples += 1;
+            }
+        }
+    }
+
+    (covered_samples * u8::MAX as usize / (SAMPLES_PER_AXIS * SAMPLES_PER_AXIS)) as u8
+}
+
+fn icon_contains(x: f32, y: f32) -> bool {
+    let outer_frame = rounded_rect_contains(x, y, 4.0, 4.0, 28.0, 28.0, 5.5)
+        && !rounded_rect_contains(x, y, 7.0, 7.0, 25.0, 25.0, 2.5);
+    let vertical_divider = (14.5..=17.5).contains(&x) && (7.0..=25.0).contains(&y);
+    let horizontal_divider = (14.5..=17.5).contains(&y) && (7.0..=25.0).contains(&x);
+
+    outer_frame || vertical_divider || horizontal_divider
+}
+
+fn rounded_rect_contains(
+    x: f32,
+    y: f32,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius: f32,
+) -> bool {
+    if !(left..=right).contains(&x) || !(top..=bottom).contains(&y) {
+        return false;
+    }
+
+    let nearest_x = x.clamp(left + radius, right - radius);
+    let nearest_y = y.clamp(top + radius, bottom - radius);
+    let horizontal_distance = x - nearest_x;
+    let vertical_distance = y - nearest_y;
+
+    horizontal_distance.mul_add(horizontal_distance, vertical_distance * vertical_distance)
+        <= radius * radius
 }
 
 fn native_error(context: impl Display, error: impl Display) -> PlatformError {
@@ -565,10 +602,13 @@ mod tests {
     }
 
     #[test]
-    fn tray_icon_has_visible_pixels() {
-        assert!(is_icon_stroke(5, 5));
-        assert!(is_icon_stroke(15, 20));
-        assert!(!is_icon_stroke(0, 0));
-        assert!(!is_icon_stroke(10, 10));
+    fn tray_icon_uses_antialiased_rounded_geometry() {
+        assert_eq!(icon_alpha(0, 0), 0);
+        assert_eq!(icon_alpha(10, 5), u8::MAX);
+        assert_eq!(icon_alpha(5, 10), u8::MAX);
+        assert_eq!(icon_alpha(10, 10), 0);
+        assert_eq!(icon_alpha(16, 10), u8::MAX);
+        assert_eq!(icon_alpha(10, 16), u8::MAX);
+        assert!((1..u8::MAX).contains(&icon_alpha(5, 5)));
     }
 }
