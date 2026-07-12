@@ -1,8 +1,5 @@
 use panes_platform::{default_hotkey_bindings, default_menu_entries};
 
-#[cfg(target_os = "windows")]
-use panes_platform::NativePlatform;
-
 #[cfg(target_os = "macos")]
 fn main() {
     if wants_runtime_summary() {
@@ -34,8 +31,31 @@ fn main() {
 
 #[cfg(target_os = "windows")]
 fn main() {
-    let platform = panes_windows::WindowsPlatform::new();
-    print_runtime_summary(platform.platform_name());
+    if wants_runtime_summary() {
+        print_runtime_summary("windows");
+        return;
+    }
+
+    let loaded = panes_runtime::config::load();
+    report_config_problems(&loaded);
+
+    let mut executor = panes_runtime::CommandExecutor::new(
+        panes_windows::WindowsPlatform::new(),
+        loaded.config.layout.clone(),
+    );
+    panes_windows::run_keyboard_menu_app_with_handler(
+        loaded.config.menu_entries,
+        loaded.config.hotkey_bindings,
+        move |invocation, repeats| {
+            if let Err(error) = executor.execute_repeated(invocation, repeats) {
+                eprintln!(
+                    "failed to execute {} command from {:?}: {error}",
+                    invocation.command.label(),
+                    invocation.source
+                );
+            }
+        },
+    );
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -44,12 +64,12 @@ fn main() {
     println!("panes currently targets macOS and Windows");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn wants_runtime_summary() -> bool {
     std::env::args().any(|argument| argument == "--runtime-summary")
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn report_config_problems(loaded: &panes_runtime::config::ConfigLoad) {
     if let Some(error) = &loaded.error {
         eprintln!("panes config error: {error}; using built-in defaults");

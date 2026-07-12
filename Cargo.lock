@@ -1294,8 +1294,11 @@ dependencies = [
 name = "panes-windows"
 version = "0.1.0"
 dependencies = [
+ "global-hotkey",
  "panes-core",
  "panes-platform",
+ "tao",
+ "tray-icon",
  "windows",
 ]
 
