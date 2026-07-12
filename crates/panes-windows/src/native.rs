@@ -39,8 +39,8 @@ use windows::{
                 GWL_EXSTYLE, GWL_STYLE, GetCursorPos, GetDesktopWindow, GetForegroundWindow,
                 GetShellWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
                 GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
-                IsZoomed, SW_RESTORE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
-                SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CHILD,
+                IsZoomed, MONITORINFOF_PRIMARY, SW_RESTORE, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
+                SWP_NOZORDER, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CHILD,
                 WS_EX_TOOLWINDOW, WS_THICKFRAME,
             },
         },
@@ -48,7 +48,7 @@ use windows::{
     core::BOOL,
 };
 
-use crate::coordinates::{rect_from_edges, rounded_i32};
+use crate::coordinates::{CoordinateSpace, rect_from_edges, rounded_i32};
 
 const QUIT_MENU_ID: &str = "panes.quit";
 
@@ -104,42 +104,23 @@ impl NativePlatform for WindowsPlatform {
     }
 
     fn cursor_position(&self) -> PlatformResult<Point> {
+        let space = coordinate_space()?;
         let mut point = POINT::default();
         // SAFETY: `point` points to initialized writable storage for the documented Win32 call.
         unsafe { GetCursorPos(&mut point) }
             .map_err(|error| native_error("failed to read Windows cursor position", error))?;
 
-        Ok(Point::new(f64::from(point.x), f64::from(point.y)))
+        Ok(space.native_point_to_panes(Point::new(f64::from(point.x), f64::from(point.y))))
     }
 
     fn screens(&self) -> PlatformResult<Vec<ScreenInfo>> {
-        let mut collector = MonitorCollector::default();
-        // SAFETY: the callback receives the valid pointer to `collector` for the duration of this
-        // synchronous enumeration, and does not retain it.
-        let result = unsafe {
-            EnumDisplayMonitors(
-                None,
-                None,
-                Some(collect_monitor),
-                LPARAM(&mut collector as *mut MonitorCollector as isize),
-            )
-        };
+        let screens = native_screens()?;
+        let space = coordinate_space_for(&screens)?;
 
-        if let Some(error) = collector.error {
-            return Err(error);
-        }
-        if !result.as_bool() {
-            return Err(native_error(
-                "failed to enumerate Windows monitors",
-                windows::core::Error::from_win32(),
-            ));
-        }
-
-        if collector.screens.is_empty() {
-            return Err(PlatformError::NotFound("no Windows monitors found"));
-        }
-
-        Ok(collector.screens)
+        Ok(screens
+            .into_iter()
+            .map(|screen| screen.into_panes_space(space))
+            .collect())
     }
 
     fn front_window(&self) -> PlatformResult<Option<WindowInfo>> {
@@ -149,10 +130,11 @@ impl NativePlatform for WindowsPlatform {
             return Ok(None);
         }
 
-        window_info(window).map(Some)
+        window_info(window, coordinate_space()?).map(Some)
     }
 
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> PlatformResult<Rect> {
+        let space = coordinate_space()?;
         let window = window_from_id(window_id)?;
         // SAFETY: `window` was reconstructed from an opaque HWND and is checked before use.
         if !unsafe { IsWindow(Some(window)).as_bool() } {
@@ -179,7 +161,7 @@ impl NativePlatform for WindowsPlatform {
             ));
         }
 
-        let (x, y, width, height) = native_rect(rect)?;
+        let (x, y, width, height) = native_rect(space.panes_rect_to_native(rect))?;
         // A maximized window ignores ordinary sizing. Restore it first so the requested frame
         // becomes the normal placement rect instead of an invisible restore target.
         // SAFETY: `window` was validated immediately above.
@@ -202,7 +184,7 @@ impl NativePlatform for WindowsPlatform {
         }
         .map_err(|error| native_error("failed to move or resize Windows window", error))?;
 
-        window_rect(window)
+        window_rect(window, space)
     }
 
     fn register_hotkeys(&mut self, bindings: &[HotkeyBinding]) -> PlatformResult<()> {
@@ -493,8 +475,70 @@ fn rounded_rect_contains(
 
 #[derive(Default)]
 struct MonitorCollector {
-    screens: Vec<ScreenInfo>,
+    screens: Vec<NativeScreenInfo>,
     error: Option<PlatformError>,
+}
+
+struct NativeScreenInfo {
+    id: ScreenId,
+    name: String,
+    frame: Rect,
+    work_area: Rect,
+    is_primary: bool,
+}
+
+impl NativeScreenInfo {
+    fn into_panes_space(self, space: CoordinateSpace) -> ScreenInfo {
+        ScreenInfo {
+            id: self.id,
+            name: self.name,
+            frame: space.native_rect_to_panes(self.frame),
+            work_area: space.native_rect_to_panes(self.work_area),
+        }
+    }
+}
+
+fn native_screens() -> PlatformResult<Vec<NativeScreenInfo>> {
+    let mut collector = MonitorCollector::default();
+    // SAFETY: the callback receives the valid pointer to `collector` for the duration of this
+    // synchronous enumeration, and does not retain it.
+    let result = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect_monitor),
+            LPARAM(&mut collector as *mut MonitorCollector as isize),
+        )
+    };
+
+    if let Some(error) = collector.error {
+        return Err(error);
+    }
+    if !result.as_bool() {
+        return Err(native_error(
+            "failed to enumerate Windows monitors",
+            windows::core::Error::from_win32(),
+        ));
+    }
+    if collector.screens.is_empty() {
+        return Err(PlatformError::NotFound("no Windows monitors found"));
+    }
+
+    Ok(collector.screens)
+}
+
+fn coordinate_space() -> PlatformResult<CoordinateSpace> {
+    let screens = native_screens()?;
+    coordinate_space_for(&screens)
+}
+
+fn coordinate_space_for(screens: &[NativeScreenInfo]) -> PlatformResult<CoordinateSpace> {
+    let primary = screens
+        .iter()
+        .find(|screen| screen.is_primary)
+        .ok_or(PlatformError::NotFound("Windows primary monitor not found"))?;
+
+    Ok(CoordinateSpace::from_primary_frame(primary.frame))
 }
 
 unsafe extern "system" fn collect_monitor(
@@ -506,7 +550,7 @@ unsafe extern "system" fn collect_monitor(
     // SAFETY: `data` is created from a unique mutable reference in `screens` and the callback is
     // invoked synchronously by EnumDisplayMonitors.
     let collector = unsafe { &mut *(data.0 as *mut MonitorCollector) };
-    match screen_info(monitor) {
+    match native_screen_info(monitor) {
         Ok(screen) => {
             collector.screens.push(screen);
             true.into()
@@ -518,7 +562,7 @@ unsafe extern "system" fn collect_monitor(
     }
 }
 
-fn screen_info(monitor: HMONITOR) -> PlatformResult<ScreenInfo> {
+fn native_screen_info(monitor: HMONITOR) -> PlatformResult<NativeScreenInfo> {
     let mut info = MONITORINFOEXW::default();
     info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
     // SAFETY: `info` has the required cbSize and is valid writable storage for GetMonitorInfoW.
@@ -543,15 +587,16 @@ fn screen_info(monitor: HMONITOR) -> PlatformResult<ScreenInfo> {
         .unwrap_or(info.szDevice.len());
     let name = String::from_utf16_lossy(&info.szDevice[..device_name_end]);
 
-    Ok(ScreenInfo {
+    Ok(NativeScreenInfo {
         id: ScreenId(monitor.0 as usize as u64),
         name,
         frame: rect_from_win32(info.monitorInfo.rcMonitor),
         work_area: rect_from_win32(info.monitorInfo.rcWork),
+        is_primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
     })
 }
 
-fn window_info(window: HWND) -> PlatformResult<WindowInfo> {
+fn window_info(window: HWND, space: CoordinateSpace) -> PlatformResult<WindowInfo> {
     let style = window_style(window);
     let mut process_id = 0;
     // SAFETY: `window` is returned by GetForegroundWindow and `process_id` is writable storage.
@@ -561,7 +606,7 @@ fn window_info(window: HWND) -> PlatformResult<WindowInfo> {
         id: WindowId(window.0 as usize as u64),
         app_id: format!("pid:{process_id}"),
         title: window_title(window),
-        rect: window_rect(window)?,
+        rect: window_rect(window, space)?,
         is_resizable: style & WS_THICKFRAME == WS_THICKFRAME,
         // The runtime turns these states into clear unsupported-window errors rather than trying
         // to move a window the operating system or application has made unavailable.
@@ -580,12 +625,12 @@ fn is_shell_or_tool_window(window: HWND) -> bool {
     }
 }
 
-fn window_rect(window: HWND) -> PlatformResult<Rect> {
+fn window_rect(window: HWND, space: CoordinateSpace) -> PlatformResult<Rect> {
     let mut rect = RECT::default();
     // SAFETY: `rect` is valid writable storage and the caller supplies a valid HWND.
     unsafe { GetWindowRect(window, &mut rect) }
         .map_err(|error| native_error("failed to read Windows window rectangle", error))?;
-    Ok(rect_from_win32(rect))
+    Ok(space.native_rect_to_panes(rect_from_win32(rect)))
 }
 
 fn window_title(window: HWND) -> String {
