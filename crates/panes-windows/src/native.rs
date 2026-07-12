@@ -1,9 +1,28 @@
-use std::{fmt::Display, mem::size_of, sync::Once};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt::Display,
+    mem::size_of,
+    sync::{Arc, Mutex, Once},
+};
 
-use panes_core::{Point, Rect, WindowId};
+use global_hotkey::{
+    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
+    hotkey::{HotKey, HotKeyParseError},
+};
+use panes_core::{Command, CommandCategory, Point, Rect, WindowId};
 use panes_platform::{
-    HotkeyBinding, MenuEntry, NativePlatform, PlatformError, PlatformResult, ScreenId, ScreenInfo,
-    WindowInfo,
+    CommandInvocation, CommandSource, HotkeyBinding, MenuEntry, NativePlatform, PlatformError,
+    PlatformResult, ScreenId, ScreenInfo, WindowInfo,
+};
+use tao::{
+    event::{Event, StartCause},
+    event_loop::{ControlFlow, EventLoopBuilder},
+};
+use tray_icon::{
+    Icon, TrayIcon, TrayIconBuilder,
+    menu::{
+        Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu, accelerator::Accelerator,
+    },
 };
 use windows::{
     Win32::{
@@ -31,14 +50,45 @@ use windows::{
 
 use crate::coordinates::{rect_from_edges, rounded_i32};
 
-#[derive(Debug)]
-pub struct WindowsPlatform;
+const QUIT_MENU_ID: &str = "panes.quit";
+
+pub struct WindowsPlatform {
+    tray: Option<TrayState>,
+    hotkeys: Option<RegisteredHotkeys>,
+}
 
 impl WindowsPlatform {
     #[must_use]
     pub fn new() -> Self {
         enable_per_monitor_dpi_awareness();
-        Self
+        Self {
+            tray: None,
+            hotkeys: None,
+        }
+    }
+
+    fn invocation_for_menu_id(&self, menu_id: &MenuId) -> Option<CommandInvocation> {
+        self.tray
+            .as_ref()?
+            .command_by_menu_id
+            .get(menu_id.as_ref())
+            .copied()
+            .map(|command| CommandInvocation {
+                command,
+                source: CommandSource::Menu,
+            })
+    }
+
+    fn invocation_for_hotkey_id(&self, hotkey_id: u32) -> Option<CommandInvocation> {
+        self.hotkeys
+            .as_ref()?
+            .command_by_id
+            .get(&hotkey_id)
+            .copied()
+            .map(|command| CommandInvocation {
+                command,
+                source: CommandSource::Keyboard,
+            })
     }
 }
 
@@ -155,17 +205,290 @@ impl NativePlatform for WindowsPlatform {
         window_rect(window)
     }
 
-    fn register_hotkeys(&mut self, _bindings: &[HotkeyBinding]) -> PlatformResult<()> {
-        Err(PlatformError::Unsupported(
-            "Windows hotkeys are not implemented yet",
-        ))
+    fn register_hotkeys(&mut self, bindings: &[HotkeyBinding]) -> PlatformResult<()> {
+        let manager = GlobalHotKeyManager::new()
+            .map_err(|error| native_error("failed to create Windows hotkey manager", error))?;
+        let mut keys = Vec::with_capacity(bindings.len());
+        let mut command_by_id = HashMap::with_capacity(bindings.len());
+
+        for binding in bindings {
+            let hotkey = match parse_hotkey(binding) {
+                Ok(hotkey) => hotkey,
+                Err(error) => {
+                    eprintln!("panes skipped a Windows hotkey: {error:?}");
+                    continue;
+                }
+            };
+            if let Err(error) = manager.register(hotkey) {
+                eprintln!(
+                    "panes could not register hotkey {} for {}: {error}",
+                    binding.accelerator,
+                    binding.command.label()
+                );
+                continue;
+            }
+            command_by_id.insert(hotkey.id(), binding.command);
+            keys.push(hotkey);
+        }
+
+        self.hotkeys = Some(RegisteredHotkeys {
+            _manager: manager,
+            _keys: keys,
+            command_by_id,
+        });
+        Ok(())
     }
 
-    fn show_tray_menu(&mut self, _entries: &[MenuEntry]) -> PlatformResult<()> {
-        Err(PlatformError::Unsupported(
-            "Windows tray menu is not implemented yet",
-        ))
+    fn show_tray_menu(&mut self, entries: &[MenuEntry]) -> PlatformResult<()> {
+        let (menu, command_by_menu_id) = build_tray_menu(entries)?;
+        let tray_icon = TrayIconBuilder::new()
+            .with_tooltip("panes")
+            .with_icon(panes_icon()?)
+            .with_menu(Box::new(menu.clone()))
+            .build()
+            .map_err(|error| native_error("failed to build Windows tray icon", error))?;
+
+        self.tray = Some(TrayState {
+            _tray_icon: tray_icon,
+            _menu: menu,
+            command_by_menu_id,
+        });
+        Ok(())
     }
+}
+
+/// Runs the Windows tray and global-hotkey message loop without creating an
+/// application window. Each command is forwarded to `handle_command`, with
+/// consecutive queued hotkeys coalesced into one native frame update.
+pub fn run_keyboard_menu_app_with_handler<F>(
+    menu_entries: Vec<MenuEntry>,
+    hotkey_bindings: Vec<HotkeyBinding>,
+    mut handle_command: F,
+) -> !
+where
+    F: FnMut(CommandInvocation, usize) + 'static,
+{
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+    MenuEvent::set_event_handler(Some(move |event| {
+        let _ = proxy.send_event(UserEvent::Menu(event));
+    }));
+
+    let proxy = event_loop.create_proxy();
+    let pending_hotkeys: Arc<Mutex<VecDeque<u32>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let hotkey_queue = Arc::clone(&pending_hotkeys);
+    GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+        if event.state() != HotKeyState::Pressed {
+            return;
+        }
+        if let Ok(mut queue) = hotkey_queue.lock() {
+            queue.push_back(event.id());
+        }
+        let _ = proxy.send_event(UserEvent::HotkeysReady);
+    }));
+
+    let mut platform = WindowsPlatform::new();
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        match event {
+            Event::NewEvents(StartCause::Init) => {
+                if let Err(error) = platform
+                    .show_tray_menu(&menu_entries)
+                    .and_then(|()| platform.register_hotkeys(&hotkey_bindings))
+                {
+                    eprintln!("panes failed to start the Windows input runtime: {error:?}");
+                    *control_flow = ControlFlow::Exit;
+                }
+            }
+            Event::UserEvent(UserEvent::Menu(event)) => {
+                if event.id() == QUIT_MENU_ID {
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+
+                if let Some(invocation) = platform.invocation_for_menu_id(event.id()) {
+                    handle_command(invocation, 1);
+                }
+            }
+            Event::UserEvent(UserEvent::HotkeysReady) => {
+                let ids: Vec<u32> = pending_hotkeys
+                    .lock()
+                    .map(|mut queue| queue.drain(..).collect())
+                    .unwrap_or_default();
+                let invocations = ids
+                    .into_iter()
+                    .filter_map(|id| platform.invocation_for_hotkey_id(id));
+
+                for (invocation, repeats) in coalesce_invocations(invocations) {
+                    handle_command(invocation, repeats);
+                }
+            }
+            _ => {}
+        }
+    })
+}
+
+struct TrayState {
+    _tray_icon: TrayIcon,
+    _menu: Menu,
+    command_by_menu_id: HashMap<String, Command>,
+}
+
+struct RegisteredHotkeys {
+    _manager: GlobalHotKeyManager,
+    _keys: Vec<HotKey>,
+    command_by_id: HashMap<u32, Command>,
+}
+
+#[derive(Debug)]
+enum UserEvent {
+    Menu(MenuEvent),
+    HotkeysReady,
+}
+
+fn coalesce_invocations(
+    invocations: impl IntoIterator<Item = CommandInvocation>,
+) -> Vec<(CommandInvocation, usize)> {
+    let mut runs: Vec<(CommandInvocation, usize)> = Vec::new();
+
+    for invocation in invocations {
+        match runs.last_mut() {
+            Some((last, repeats)) if *last == invocation => *repeats += 1,
+            _ => runs.push((invocation, 1)),
+        }
+    }
+
+    runs
+}
+
+fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<String, Command>)> {
+    let menu = Menu::new();
+    let mut command_by_menu_id = HashMap::with_capacity(entries.len());
+
+    for category in CommandCategory::ALL {
+        let submenu = Submenu::new(category.label(), true);
+        let mut has_items = false;
+
+        for entry in entries
+            .iter()
+            .filter(|entry| entry.command.category() == *category)
+        {
+            let menu_id = command_menu_id(entry.command);
+            let accelerator = entry
+                .accelerator
+                .as_deref()
+                .and_then(|accelerator| accelerator.parse::<Accelerator>().ok());
+            let item = MenuItem::with_id(menu_id.clone(), &entry.label, true, accelerator);
+            submenu.append(&item).map_err(|error| {
+                native_error(
+                    format!("failed to append {} menu item", entry.command.label()),
+                    error,
+                )
+            })?;
+            command_by_menu_id.insert(menu_id, entry.command);
+            has_items = true;
+        }
+
+        if has_items {
+            menu.append(&submenu).map_err(|error| {
+                native_error(
+                    format!("failed to append {} submenu", category.label()),
+                    error,
+                )
+            })?;
+        }
+    }
+
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|error| native_error("failed to append menu separator", error))?;
+    menu.append(&MenuItem::with_id(QUIT_MENU_ID, "Quit Panes", true, None))
+        .map_err(|error| native_error("failed to append quit menu item", error))?;
+
+    Ok((menu, command_by_menu_id))
+}
+
+fn parse_hotkey(binding: &HotkeyBinding) -> Result<HotKey, PlatformError> {
+    binding
+        .accelerator
+        .parse::<HotKey>()
+        .map_err(|error: HotKeyParseError| {
+            PlatformError::Native(format!(
+                "invalid hotkey {} for {}: {error}",
+                binding.accelerator,
+                binding.command.label()
+            ))
+        })
+}
+
+fn command_menu_id(command: Command) -> String {
+    format!("panes.command.{}", command.id())
+}
+
+fn panes_icon() -> PlatformResult<Icon> {
+    const SIZE: usize = 32;
+    let mut rgba = vec![0; SIZE * SIZE * 4];
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let offset = (y * SIZE + x) * 4;
+            rgba[offset] = 41;
+            rgba[offset + 1] = 128;
+            rgba[offset + 2] = 185;
+            rgba[offset + 3] = icon_alpha(x, y);
+        }
+    }
+
+    Icon::from_rgba(rgba, SIZE as u32, SIZE as u32)
+        .map_err(|error| native_error("failed to create tray icon", error))
+}
+
+fn icon_alpha(x: usize, y: usize) -> u8 {
+    const SAMPLES_PER_AXIS: usize = 4;
+    let mut covered_samples = 0;
+
+    for sample_y in 0..SAMPLES_PER_AXIS {
+        for sample_x in 0..SAMPLES_PER_AXIS {
+            let point_x = x as f32 + (sample_x as f32 + 0.5) / SAMPLES_PER_AXIS as f32;
+            let point_y = y as f32 + (sample_y as f32 + 0.5) / SAMPLES_PER_AXIS as f32;
+            if icon_contains(point_x, point_y) {
+                covered_samples += 1;
+            }
+        }
+    }
+
+    (covered_samples * u8::MAX as usize / (SAMPLES_PER_AXIS * SAMPLES_PER_AXIS)) as u8
+}
+
+fn icon_contains(x: f32, y: f32) -> bool {
+    let outer_frame = rounded_rect_contains(x, y, 4.0, 4.0, 28.0, 28.0, 5.5)
+        && !rounded_rect_contains(x, y, 7.0, 7.0, 25.0, 25.0, 2.5);
+    let vertical_divider = (14.5..=17.5).contains(&x) && (7.0..=25.0).contains(&y);
+    let horizontal_divider = (14.5..=17.5).contains(&y) && (7.0..=25.0).contains(&x);
+
+    outer_frame || vertical_divider || horizontal_divider
+}
+
+fn rounded_rect_contains(
+    x: f32,
+    y: f32,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius: f32,
+) -> bool {
+    if !(left..=right).contains(&x) || !(top..=bottom).contains(&y) {
+        return false;
+    }
+
+    let nearest_x = x.clamp(left + radius, right - radius);
+    let nearest_y = y.clamp(top + radius, bottom - radius);
+    let horizontal_distance = x - nearest_x;
+    let vertical_distance = y - nearest_y;
+
+    horizontal_distance.mul_add(horizontal_distance, vertical_distance * vertical_distance)
+        <= radius * radius
 }
 
 #[derive(Default)]
@@ -317,7 +640,7 @@ fn window_from_id(id: WindowId) -> PlatformResult<HWND> {
     Ok(HWND(raw as *mut _))
 }
 
-fn native_error(context: &str, error: impl Display) -> PlatformError {
+fn native_error(context: impl Display, error: impl Display) -> PlatformError {
     PlatformError::Native(format!("{context}: {error}"))
 }
 

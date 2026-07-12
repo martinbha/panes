@@ -12,6 +12,9 @@ panes-core = { path = "../panes-core" }
 panes-platform = { path = "../panes-platform" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+global-hotkey = { version = "0.8.0", default-features = false }
+tao = { version = "0.35.3", default-features = false }
+tray-icon = { version = "0.24.1", default-features = false }
 windows = { version = "0.61.3", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

@@ -4,7 +4,7 @@ mod coordinates;
 mod native;
 
 #[cfg(target_os = "windows")]
-pub use native::WindowsPlatform;
+pub use native::{WindowsPlatform, run_keyboard_menu_app_with_handler};
 
 // Keep the crate buildable for the workspace's non-Windows development and
 // test targets. The actual adapter is compiled only where the Win32 APIs are
