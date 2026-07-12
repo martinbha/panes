@@ -31,7 +31,7 @@ use windows::{
 
 use crate::coordinates::{rect_from_edges, rounded_i32};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WindowsPlatform;
 
 impl WindowsPlatform {
@@ -39,6 +39,12 @@ impl WindowsPlatform {
     pub fn new() -> Self {
         enable_per_monitor_dpi_awareness();
         Self
+    }
+}
+
+impl Default for WindowsPlatform {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
