@@ -92,7 +92,7 @@ impl<P: NativePlatform> CommandExecutor<P> {
             return Err(CommandExecutionError::NoScreens);
         }
 
-        let screen = self.current_screen(&window, &screens)?;
+        let mut screen = self.current_screen(&window, &screens)?;
         let requested_rect = if invocation.command == Command::Restore {
             self.history
                 .restore_rect(window.id)
@@ -102,6 +102,14 @@ impl<P: NativePlatform> CommandExecutor<P> {
         } else {
             let mut rect = window.rect;
             for _ in 0..repeats.max(1) {
+                if is_horizontal_half(invocation.command)
+                    && is_snapped_to_half(rect, screen, invocation.command, &self.config)
+                {
+                    if let Some(adjacent) = adjacent_screen(screen, &screens, invocation.command) {
+                        screen = adjacent;
+                    }
+                }
+
                 rect = calculate(
                     LayoutRequest {
                         command: invocation.command,
@@ -259,6 +267,78 @@ fn screen_containing_point(
         .find(|screen| screen.frame.contains_point(point))
 }
 
+fn is_horizontal_half(command: Command) -> bool {
+    matches!(command, Command::LeftHalf | Command::RightHalf)
+}
+
+fn is_snapped_to_half(
+    window: Rect,
+    screen: &ScreenInfo,
+    command: Command,
+    config: &LayoutConfig,
+) -> bool {
+    let expected = calculate(
+        LayoutRequest {
+            command,
+            window,
+            screen: screen.work_area,
+        },
+        config,
+    )
+    .rect;
+
+    rects_match(window, expected)
+}
+
+fn rects_match(left: Rect, right: Rect) -> bool {
+    const TOLERANCE: f64 = 1.0;
+
+    (left.origin.x - right.origin.x).abs() <= TOLERANCE
+        && (left.origin.y - right.origin.y).abs() <= TOLERANCE
+        && (left.size.width - right.size.width).abs() <= TOLERANCE
+        && (left.size.height - right.size.height).abs() <= TOLERANCE
+}
+
+fn adjacent_screen<'a>(
+    current: &ScreenInfo,
+    screens: &'a [ScreenInfo],
+    command: Command,
+) -> Option<&'a ScreenInfo> {
+    screens
+        .iter()
+        .filter_map(|candidate| {
+            let is_in_direction = match command {
+                Command::LeftHalf => candidate.frame.max_x() <= current.frame.min_x(),
+                Command::RightHalf => candidate.frame.min_x() >= current.frame.max_x(),
+                _ => return None,
+            };
+            let vertical_overlap = (candidate.frame.max_y().min(current.frame.max_y())
+                - candidate.frame.min_y().max(current.frame.min_y()))
+            .max(0.0);
+
+            if !is_in_direction || vertical_overlap == 0.0 {
+                return None;
+            }
+
+            let horizontal_gap = match command {
+                Command::LeftHalf => current.frame.min_x() - candidate.frame.max_x(),
+                Command::RightHalf => candidate.frame.min_x() - current.frame.max_x(),
+                _ => unreachable!("horizontal half command was checked above"),
+            };
+
+            Some((candidate, horizontal_gap, vertical_overlap))
+        })
+        .min_by(
+            |(left, left_gap, left_overlap), (right, right_gap, right_overlap)| {
+                left_gap
+                    .total_cmp(right_gap)
+                    .then_with(|| right_overlap.total_cmp(left_overlap))
+                    .then_with(|| left.id.0.cmp(&right.id.0))
+            },
+        )
+        .map(|(screen, _, _)| screen)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -363,6 +443,94 @@ mod tests {
         assert_eq!(
             execution.requested_rect,
             Rect::new(1000.0, 0.0, 1000.0, 800.0)
+        );
+    }
+
+    #[test]
+    fn repeated_right_half_moves_to_the_adjacent_display() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+        let execution = executor
+            .execute_repeated(invocation(Command::RightHalf), 2)
+            .unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(2));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(1500.0, 0.0, 500.0, 800.0)
+        );
+    }
+
+    #[test]
+    fn a_matching_half_command_on_an_edge_moves_to_the_adjacent_display() {
+        let platform = FakePlatform {
+            front_window: Ok(Some(window(Rect::new(500.0, 0.0, 500.0, 800.0)))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let execution = executor.execute(invocation(Command::RightHalf)).unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(2));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(1500.0, 0.0, 500.0, 800.0)
+        );
+    }
+
+    #[test]
+    fn matching_left_half_moves_to_the_left_adjacent_display() {
+        let platform = FakePlatform {
+            front_window: Ok(Some(window(Rect::new(1000.0, 0.0, 500.0, 800.0)))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let execution = executor.execute(invocation(Command::LeftHalf)).unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(1));
+        assert_eq!(execution.requested_rect, Rect::new(0.0, 0.0, 500.0, 800.0));
+    }
+
+    #[test]
+    fn matching_half_command_does_not_wrap_without_an_adjacent_display() {
+        let platform = FakePlatform {
+            screens: Ok(vec![screen(1, 0.0)]),
+            front_window: Ok(Some(window(Rect::new(0.0, 0.0, 500.0, 800.0)))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let execution = executor.execute(invocation(Command::LeftHalf)).unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(1));
+        assert_eq!(execution.requested_rect, Rect::new(0.0, 0.0, 500.0, 800.0));
+    }
+
+    #[test]
+    fn adjacent_screen_prefers_the_largest_vertical_overlap_after_distance() {
+        let screens = vec![
+            screen_with_frame(1, Rect::new(0.0, 0.0, 1000.0, 800.0)),
+            screen_with_frame(2, Rect::new(1000.0, 400.0, 1000.0, 800.0)),
+            screen_with_frame(3, Rect::new(1000.0, 0.0, 1000.0, 800.0)),
+        ];
+
+        let adjacent = adjacent_screen(&screens[0], &screens, Command::RightHalf)
+            .expect("a right-hand display should be selected");
+
+        assert_eq!(adjacent.id, ScreenId(3));
+    }
+
+    #[test]
+    fn adjacent_screen_ignores_displays_without_vertical_overlap() {
+        let screens = vec![
+            screen_with_frame(1, Rect::new(0.0, 0.0, 1000.0, 800.0)),
+            screen_with_frame(2, Rect::new(1000.0, 800.0, 1000.0, 800.0)),
+        ];
+
+        assert_eq!(
+            adjacent_screen(&screens[0], &screens, Command::RightHalf),
+            None
         );
     }
 
@@ -523,11 +691,15 @@ mod tests {
     }
 
     fn screen(id: u64, x: f64) -> ScreenInfo {
+        screen_with_frame(id, Rect::new(x, 0.0, 1000.0, 800.0))
+    }
+
+    fn screen_with_frame(id: u64, frame: Rect) -> ScreenInfo {
         ScreenInfo {
             id: ScreenId(id),
             name: format!("Screen {id}"),
-            frame: Rect::new(x, 0.0, 1000.0, 800.0),
-            work_area: Rect::new(x, 0.0, 1000.0, 800.0),
+            frame,
+            work_area: frame,
         }
     }
 
