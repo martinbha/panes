@@ -11,5 +11,16 @@ repository.workspace = true
 panes-core = { path = "../panes-core" }
 panes-platform = { path = "../panes-platform" }
 
-[lints]
-workspace = true
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61.3", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
