@@ -1296,6 +1296,7 @@ version = "0.1.0"
 dependencies = [
  "panes-core",
  "panes-platform",
+ "windows",
 ]
 
 [[package]]
