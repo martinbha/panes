@@ -97,10 +97,11 @@ impl<P: NativePlatform> CommandExecutor<P> {
         if screens.is_empty() {
             return Err(CommandExecutionError::NoScreens);
         }
-        if let Some(screen) = screens
-            .iter()
-            .find(|screen| !screen.frame.is_valid() || !screen.work_area.is_valid())
-        {
+        if let Some(screen) = screens.iter().find(|screen| {
+            !screen.frame.is_valid()
+                || !screen.work_area.is_valid()
+                || !rect_contains_with_tolerance(screen.frame, screen.work_area)
+        }) {
             return Err(CommandExecutionError::InvalidScreenGeometry {
                 screen_id: screen.id,
             });
@@ -434,6 +435,15 @@ fn geometry_rects_match(left: Rect, right: Rect) -> bool {
         && (left.origin.y - right.origin.y).abs() <= TOLERANCE
         && (left.size.width - right.size.width).abs() <= TOLERANCE
         && (left.size.height - right.size.height).abs() <= TOLERANCE
+}
+
+fn rect_contains_with_tolerance(container: Rect, candidate: Rect) -> bool {
+    const TOLERANCE: f64 = 0.1;
+
+    candidate.min_x() >= container.min_x() - TOLERANCE
+        && candidate.min_y() >= container.min_y() - TOLERANCE
+        && candidate.max_x() <= container.max_x() + TOLERANCE
+        && candidate.max_y() <= container.max_y() + TOLERANCE
 }
 
 fn navigates_between_screens(command: Command) -> bool {
@@ -1039,6 +1049,30 @@ mod tests {
                 1,
                 Rect::new(0.0, 0.0, f64::NAN, 800.0),
             )]),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::InvalidScreenGeometry {
+                screen_id: ScreenId(1)
+            }
+        );
+        assert!(executor.platform().set_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn reports_work_area_outside_its_screen_frame() {
+        let platform = FakePlatform {
+            screens: Ok(vec![ScreenInfo {
+                id: ScreenId(1),
+                name: "Invalid Screen".to_owned(),
+                frame: Rect::new(0.0, 0.0, 1000.0, 800.0),
+                work_area: Rect::new(2000.0, 0.0, 1000.0, 800.0),
+            }]),
             ..FakePlatform::new()
         };
         let mut executor = CommandExecutor::with_default_config(platform);
