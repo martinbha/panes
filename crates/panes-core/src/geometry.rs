@@ -65,6 +65,16 @@ impl Rect {
     }
 
     #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.origin.x.is_finite()
+            && self.origin.y.is_finite()
+            && self.size.width.is_finite()
+            && self.size.height.is_finite()
+            && self.size.width > 0.0
+            && self.size.height > 0.0
+    }
+
+    #[must_use]
     pub fn mid_x(self) -> f64 {
         self.origin.x + self.size.width / 2.0
     }
@@ -195,5 +205,13 @@ mod tests {
         let other = Rect::new(100.0, 0.0, 100.0, 100.0);
 
         assert_eq!(rect.intersection(other), None);
+    }
+
+    #[test]
+    fn valid_rect_requires_finite_coordinates_and_positive_dimensions() {
+        assert!(Rect::new(-100.0, 20.0, 300.0, 200.0).is_valid());
+        assert!(!Rect::new(f64::NAN, 20.0, 300.0, 200.0).is_valid());
+        assert!(!Rect::new(0.0, 0.0, 0.0, 200.0).is_valid());
+        assert!(!Rect::new(0.0, 0.0, 100.0, f64::INFINITY).is_valid());
     }
 }

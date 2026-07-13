@@ -84,6 +84,7 @@ fn window(rect: Rect) -> WindowInfo {
         is_resizable: true,
         is_minimized: false,
         is_hidden: false,
+        is_fullscreen: false,
     }
 }
 
@@ -308,6 +309,17 @@ fn no_command_panics_on_unsupported_windows() {
                 ..window(Rect::new(100.0, 100.0, 200.0, 100.0))
             },
             UnsupportedWindowReason::Minimized,
+        ),
+        (
+            WindowInfo {
+                is_fullscreen: true,
+                ..window(Rect::new(0.0, 0.0, 1000.0, 800.0))
+            },
+            UnsupportedWindowReason::Fullscreen,
+        ),
+        (
+            window(Rect::new(f64::NAN, 100.0, 200.0, 100.0)),
+            UnsupportedWindowReason::InvalidGeometry,
         ),
     ];
 

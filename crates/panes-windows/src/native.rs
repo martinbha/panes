@@ -28,7 +28,8 @@ use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, POINT, RECT},
         Graphics::Gdi::{
-            EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+            EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST,
+            MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
         },
         UI::{
             HiDpi::{
@@ -612,7 +613,37 @@ fn window_info(window: HWND, space: CoordinateSpace) -> PlatformResult<WindowInf
         // to move a window the operating system or application has made unavailable.
         is_minimized: unsafe { IsIconic(window).as_bool() },
         is_hidden: !unsafe { IsWindowVisible(window).as_bool() },
+        is_fullscreen: is_fullscreen_window(window),
     })
+}
+
+fn is_fullscreen_window(window: HWND) -> bool {
+    // Maximized windows are intentionally supported: `set_window_rect` restores them before
+    // applying a frame. Borderless fullscreen windows cover the monitor without being zoomed.
+    if unsafe { IsZoomed(window).as_bool() } {
+        return false;
+    }
+
+    let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+    if monitor.0.is_null() {
+        return false;
+    }
+
+    let mut monitor_info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..MONITORINFO::default()
+    };
+    let mut window_rect = RECT::default();
+    if !unsafe { GetMonitorInfoW(monitor, &raw mut monitor_info).as_bool() }
+        || unsafe { GetWindowRect(window, &mut window_rect) }.is_err()
+    {
+        return false;
+    }
+
+    window_rect.left == monitor_info.rcMonitor.left
+        && window_rect.top == monitor_info.rcMonitor.top
+        && window_rect.right == monitor_info.rcMonitor.right
+        && window_rect.bottom == monitor_info.rcMonitor.bottom
 }
 
 fn is_shell_or_tool_window(window: HWND) -> bool {
