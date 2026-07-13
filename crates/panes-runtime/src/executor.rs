@@ -93,6 +93,7 @@ impl<P: NativePlatform> CommandExecutor<P> {
         }
 
         let mut screen = self.current_screen(&window, &screens)?;
+        let mut resulting_command = invocation.command;
         let requested_rect = if invocation.command == Command::Restore {
             self.history
                 .restore_rect(window.id)
@@ -101,24 +102,34 @@ impl<P: NativePlatform> CommandExecutor<P> {
                 })?
         } else {
             let mut rect = window.rect;
+            let mut previous_command = self
+                .history
+                .last_command(window.id)
+                .filter(|record| rects_match(record.rect, rect))
+                .map(|record| (record.command, record.rect));
+
             for _ in 0..repeats.max(1) {
-                if is_horizontal_half(invocation.command)
-                    && is_snapped_to_half(rect, screen, invocation.command, &self.config)
+                let mut layout_command = invocation.command;
+                if navigates_between_screens(invocation.command)
+                    && repeats_command(previous_command, rect, invocation.command)
                 {
-                    if let Some(adjacent) = adjacent_screen(screen, &screens, invocation.command) {
-                        screen = adjacent;
+                    if let Some(next) = next_screen(screen, &screens, invocation.command) {
+                        screen = next;
+                        layout_command = destination_edge_command(invocation.command);
                     }
                 }
 
                 rect = calculate(
                     LayoutRequest {
-                        command: invocation.command,
+                        command: layout_command,
                         window: rect,
                         screen: screen.work_area,
                     },
                     &self.config,
                 )
                 .rect;
+                resulting_command = layout_command;
+                previous_command = Some((layout_command, rect));
             }
             rect
         };
@@ -135,7 +146,7 @@ impl<P: NativePlatform> CommandExecutor<P> {
         }
 
         self.history
-            .record_command(window.id, invocation.command, applied_rect);
+            .record_command(window.id, resulting_command, applied_rect);
 
         Ok(CommandExecution {
             invocation,
@@ -227,8 +238,6 @@ fn validate_window(window: &WindowInfo) -> CommandExecutionResult<()> {
         Some(UnsupportedWindowReason::Hidden)
     } else if window.is_minimized {
         Some(UnsupportedWindowReason::Minimized)
-    } else if !window.is_resizable {
-        Some(UnsupportedWindowReason::NotResizable)
     } else {
         None
     };
@@ -267,27 +276,34 @@ fn screen_containing_point(
         .find(|screen| screen.frame.contains_point(point))
 }
 
-fn is_horizontal_half(command: Command) -> bool {
-    matches!(command, Command::LeftHalf | Command::RightHalf)
+fn navigates_between_screens(command: Command) -> bool {
+    matches!(
+        command,
+        Command::LeftHalf
+            | Command::RightHalf
+            | Command::MoveLeft
+            | Command::MoveRight
+            | Command::MoveUp
+            | Command::MoveDown
+    )
 }
 
-fn is_snapped_to_half(
-    window: Rect,
-    screen: &ScreenInfo,
-    command: Command,
-    config: &LayoutConfig,
-) -> bool {
-    let expected = calculate(
-        LayoutRequest {
-            command,
-            window,
-            screen: screen.work_area,
-        },
-        config,
-    )
-    .rect;
+fn repeats_command(previous: Option<(Command, Rect)>, rect: Rect, command: Command) -> bool {
+    previous.is_some_and(|(previous_command, previous_rect)| {
+        previous_command == command && rects_match(previous_rect, rect)
+    })
+}
 
-    rects_match(window, expected)
+fn destination_edge_command(command: Command) -> Command {
+    match command {
+        Command::LeftHalf => Command::RightHalf,
+        Command::RightHalf => Command::LeftHalf,
+        Command::MoveLeft => Command::MoveRight,
+        Command::MoveRight => Command::MoveLeft,
+        Command::MoveUp => Command::MoveDown,
+        Command::MoveDown => Command::MoveUp,
+        _ => unreachable!("only display-navigation commands reach this function"),
+    }
 }
 
 fn rects_match(left: Rect, right: Rect) -> bool {
@@ -308,25 +324,35 @@ fn adjacent_screen<'a>(
         .iter()
         .filter_map(|candidate| {
             let is_in_direction = match command {
-                Command::LeftHalf => candidate.frame.max_x() <= current.frame.min_x(),
-                Command::RightHalf => candidate.frame.min_x() >= current.frame.max_x(),
+                Command::LeftHalf | Command::MoveLeft => {
+                    candidate.frame.max_x() <= current.frame.min_x()
+                }
+                Command::RightHalf | Command::MoveRight => {
+                    candidate.frame.min_x() >= current.frame.max_x()
+                }
+                Command::MoveUp => candidate.frame.min_y() >= current.frame.max_y(),
+                Command::MoveDown => candidate.frame.max_y() <= current.frame.min_y(),
                 _ => return None,
             };
-            let vertical_overlap = (candidate.frame.max_y().min(current.frame.max_y())
-                - candidate.frame.min_y().max(current.frame.min_y()))
-            .max(0.0);
+            let cross_axis_overlap = cross_axis_overlap(current, candidate, command);
 
-            if !is_in_direction || vertical_overlap == 0.0 {
+            if !is_in_direction || cross_axis_overlap == 0.0 {
                 return None;
             }
 
-            let horizontal_gap = match command {
-                Command::LeftHalf => current.frame.min_x() - candidate.frame.max_x(),
-                Command::RightHalf => candidate.frame.min_x() - current.frame.max_x(),
-                _ => unreachable!("horizontal half command was checked above"),
+            let gap = match command {
+                Command::LeftHalf | Command::MoveLeft => {
+                    current.frame.min_x() - candidate.frame.max_x()
+                }
+                Command::RightHalf | Command::MoveRight => {
+                    candidate.frame.min_x() - current.frame.max_x()
+                }
+                Command::MoveUp => candidate.frame.min_y() - current.frame.max_y(),
+                Command::MoveDown => current.frame.min_y() - candidate.frame.max_y(),
+                _ => unreachable!("only display-navigation commands reach this function"),
             };
 
-            Some((candidate, horizontal_gap, vertical_overlap))
+            Some((candidate, gap, cross_axis_overlap))
         })
         .min_by(
             |(left, left_gap, left_overlap), (right, right_gap, right_overlap)| {
@@ -337,6 +363,74 @@ fn adjacent_screen<'a>(
             },
         )
         .map(|(screen, _, _)| screen)
+}
+
+fn next_screen<'a>(
+    current: &ScreenInfo,
+    screens: &'a [ScreenInfo],
+    command: Command,
+) -> Option<&'a ScreenInfo> {
+    adjacent_screen(current, screens, command)
+        .or_else(|| wrapping_screen(current, screens, command))
+}
+
+fn wrapping_screen<'a>(
+    current: &ScreenInfo,
+    screens: &'a [ScreenInfo],
+    command: Command,
+) -> Option<&'a ScreenInfo> {
+    screens
+        .iter()
+        .filter(|candidate| candidate.id != current.id)
+        .map(|candidate| {
+            (
+                candidate,
+                wrap_boundary(candidate, command),
+                cross_axis_overlap(current, candidate, command),
+            )
+        })
+        .min_by(
+            |(left, left_boundary, left_overlap), (right, right_boundary, right_overlap)| {
+                let boundary_order = match command {
+                    Command::RightHalf | Command::MoveRight | Command::MoveUp => {
+                        left_boundary.total_cmp(right_boundary)
+                    }
+                    Command::LeftHalf | Command::MoveLeft | Command::MoveDown => {
+                        right_boundary.total_cmp(left_boundary)
+                    }
+                    _ => unreachable!("only display-navigation commands reach this function"),
+                };
+
+                boundary_order
+                    .then_with(|| right_overlap.total_cmp(left_overlap))
+                    .then_with(|| left.id.0.cmp(&right.id.0))
+            },
+        )
+        .map(|(screen, _, _)| screen)
+}
+
+fn cross_axis_overlap(current: &ScreenInfo, candidate: &ScreenInfo, command: Command) -> f64 {
+    match command {
+        Command::LeftHalf | Command::RightHalf | Command::MoveLeft | Command::MoveRight => {
+            (candidate.frame.max_y().min(current.frame.max_y())
+                - candidate.frame.min_y().max(current.frame.min_y()))
+            .max(0.0)
+        }
+        Command::MoveUp | Command::MoveDown => (candidate.frame.max_x().min(current.frame.max_x())
+            - candidate.frame.min_x().max(current.frame.min_x()))
+        .max(0.0),
+        _ => unreachable!("only display-navigation commands reach this function"),
+    }
+}
+
+fn wrap_boundary(screen: &ScreenInfo, command: Command) -> f64 {
+    match command {
+        Command::RightHalf | Command::MoveRight => screen.frame.min_x(),
+        Command::LeftHalf | Command::MoveLeft => screen.frame.max_x(),
+        Command::MoveUp => screen.frame.min_y(),
+        Command::MoveDown => screen.frame.max_y(),
+        _ => unreachable!("only display-navigation commands reach this function"),
+    }
 }
 
 #[cfg(test)]
@@ -447,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_right_half_moves_to_the_adjacent_display() {
+    fn repeated_right_half_enters_the_adjacent_display_at_its_left_half() {
         let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
 
         let execution = executor
@@ -457,12 +551,50 @@ mod tests {
         assert_eq!(execution.screen_id, ScreenId(2));
         assert_eq!(
             execution.requested_rect,
-            Rect::new(1500.0, 0.0, 500.0, 800.0)
+            Rect::new(1000.0, 0.0, 500.0, 800.0)
+        );
+        assert_eq!(
+            executor
+                .history()
+                .last_command(WindowId(42))
+                .unwrap()
+                .command,
+            Command::LeftHalf
         );
     }
 
     #[test]
-    fn a_matching_half_command_on_an_edge_moves_to_the_adjacent_display() {
+    fn half_navigation_advances_one_section_per_press() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+        let first = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(first.applied_rect)));
+
+        let second = executor.execute(invocation(Command::RightHalf)).unwrap();
+        assert_eq!(second.screen_id, ScreenId(1));
+        assert_eq!(second.requested_rect, Rect::new(500.0, 0.0, 500.0, 800.0));
+        executor.platform_mut().front_window = Ok(Some(window(second.applied_rect)));
+
+        let third = executor.execute(invocation(Command::RightHalf)).unwrap();
+        assert_eq!(third.screen_id, ScreenId(2));
+        assert_eq!(third.requested_rect, Rect::new(1000.0, 0.0, 500.0, 800.0));
+        assert_eq!(
+            executor
+                .history()
+                .last_command(WindowId(42))
+                .unwrap()
+                .command,
+            Command::LeftHalf
+        );
+        executor.platform_mut().front_window = Ok(Some(window(third.applied_rect)));
+
+        let fourth = executor.execute(invocation(Command::RightHalf)).unwrap();
+        assert_eq!(fourth.screen_id, ScreenId(2));
+        assert_eq!(fourth.requested_rect, Rect::new(1500.0, 0.0, 500.0, 800.0));
+    }
+
+    #[test]
+    fn a_matching_half_without_history_stays_on_the_current_display() {
         let platform = FakePlatform {
             front_window: Ok(Some(window(Rect::new(500.0, 0.0, 500.0, 800.0)))),
             ..FakePlatform::new()
@@ -471,15 +603,15 @@ mod tests {
 
         let execution = executor.execute(invocation(Command::RightHalf)).unwrap();
 
-        assert_eq!(execution.screen_id, ScreenId(2));
+        assert_eq!(execution.screen_id, ScreenId(1));
         assert_eq!(
             execution.requested_rect,
-            Rect::new(1500.0, 0.0, 500.0, 800.0)
+            Rect::new(500.0, 0.0, 500.0, 800.0)
         );
     }
 
     #[test]
-    fn matching_left_half_moves_to_the_left_adjacent_display() {
+    fn a_matching_left_half_without_history_stays_on_the_current_display() {
         let platform = FakePlatform {
             front_window: Ok(Some(window(Rect::new(1000.0, 0.0, 500.0, 800.0)))),
             ..FakePlatform::new()
@@ -488,8 +620,98 @@ mod tests {
 
         let execution = executor.execute(invocation(Command::LeftHalf)).unwrap();
 
+        assert_eq!(execution.screen_id, ScreenId(2));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(1000.0, 0.0, 500.0, 800.0)
+        );
+    }
+
+    #[test]
+    fn repeated_move_right_enters_the_adjacent_display_at_its_left_edge() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+
+        let execution = executor
+            .execute_repeated(invocation(Command::MoveRight), 2)
+            .unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(2));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(1000.0, 100.0, 200.0, 100.0)
+        );
+        assert_eq!(
+            executor
+                .history()
+                .last_command(WindowId(42))
+                .unwrap()
+                .command,
+            Command::MoveLeft
+        );
+    }
+
+    #[test]
+    fn repeated_move_up_enters_an_adjacent_display_at_its_bottom_edge() {
+        let platform = FakePlatform {
+            screens: Ok(vec![
+                screen_with_frame(1, Rect::new(0.0, 0.0, 1000.0, 800.0)),
+                screen_with_frame(2, Rect::new(0.0, 800.0, 1000.0, 800.0)),
+            ]),
+            front_window: Ok(Some(window(Rect::new(100.0, 700.0, 200.0, 100.0)))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let execution = executor
+            .execute_repeated(invocation(Command::MoveUp), 2)
+            .unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(2));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(100.0, 800.0, 200.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn outermost_display_wraps_to_the_first_display() {
+        let platform = FakePlatform {
+            front_window: Ok(Some(window(Rect::new(1500.0, 0.0, 500.0, 800.0)))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+        executor.history_mut().record_command(
+            WindowId(42),
+            Command::RightHalf,
+            Rect::new(1500.0, 0.0, 500.0, 800.0),
+        );
+
+        let execution = executor.execute(invocation(Command::RightHalf)).unwrap();
+
         assert_eq!(execution.screen_id, ScreenId(1));
         assert_eq!(execution.requested_rect, Rect::new(0.0, 0.0, 500.0, 800.0));
+    }
+
+    #[test]
+    fn move_right_wraps_from_the_outermost_display() {
+        let platform = FakePlatform {
+            front_window: Ok(Some(window(Rect::new(1800.0, 100.0, 200.0, 100.0)))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+        executor.history_mut().record_command(
+            WindowId(42),
+            Command::MoveRight,
+            Rect::new(1800.0, 100.0, 200.0, 100.0),
+        );
+
+        let execution = executor.execute(invocation(Command::MoveRight)).unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(1));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(0.0, 100.0, 200.0, 100.0)
+        );
     }
 
     #[test]
@@ -532,6 +754,19 @@ mod tests {
             adjacent_screen(&screens[0], &screens, Command::RightHalf),
             None
         );
+    }
+
+    #[test]
+    fn wrapping_screen_can_reach_an_offset_display() {
+        let screens = vec![
+            screen_with_frame(1, Rect::new(0.0, 0.0, 1000.0, 800.0)),
+            screen_with_frame(2, Rect::new(-1000.0, 800.0, 1000.0, 800.0)),
+        ];
+
+        let wrapped = wrapping_screen(&screens[0], &screens, Command::RightHalf)
+            .expect("the other display should be used as the wrap target");
+
+        assert_eq!(wrapped.id, ScreenId(2));
     }
 
     #[test]
@@ -647,7 +882,7 @@ mod tests {
     fn reports_unsupported_windows() {
         let platform = FakePlatform {
             front_window: Ok(Some(WindowInfo {
-                is_resizable: false,
+                is_hidden: true,
                 ..window(Rect::new(100.0, 100.0, 200.0, 100.0))
             })),
             ..FakePlatform::new()
@@ -660,8 +895,45 @@ mod tests {
             error,
             CommandExecutionError::UnsupportedWindow {
                 window_id: WindowId(42),
-                reason: UnsupportedWindowReason::NotResizable,
+                reason: UnsupportedWindowReason::Hidden,
             }
+        );
+    }
+
+    #[test]
+    fn lets_the_platform_handle_windows_that_report_nonresizable() {
+        let platform = FakePlatform {
+            front_window: Ok(Some(WindowInfo {
+                is_resizable: false,
+                ..window(Rect::new(100.0, 100.0, 200.0, 100.0))
+            })),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let execution = executor.execute(invocation(Command::Maximize)).unwrap();
+
+        assert_eq!(execution.requested_rect, Rect::new(0.0, 0.0, 1000.0, 800.0));
+    }
+
+    #[test]
+    fn repeats_a_half_command_after_an_app_enforces_a_different_size() {
+        let constrained_rect = Rect::new(400.0, 0.0, 600.0, 800.0);
+        let platform = FakePlatform {
+            front_window: Ok(Some(window(constrained_rect))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+        executor
+            .history_mut()
+            .record_command(WindowId(42), Command::RightHalf, constrained_rect);
+
+        let execution = executor.execute(invocation(Command::RightHalf)).unwrap();
+
+        assert_eq!(execution.screen_id, ScreenId(2));
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(1000.0, 0.0, 500.0, 800.0)
         );
     }
 

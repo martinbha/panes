@@ -6,25 +6,15 @@ use accessibility_sys::{
     AXValueCreate, AXValueGetType, AXValueGetTypeID, AXValueGetValue, AXValueRef, error_string,
     kAXErrorAPIDisabled, kAXErrorAttributeUnsupported, kAXErrorNoValue,
     kAXFocusedApplicationAttribute, kAXPositionAttribute, kAXSizeAttribute,
-    kAXStandardWindowSubrole, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint, kAXValueTypeCGSize,
-    kAXWindowRole, pid_t,
+    kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowRole, pid_t,
 };
 use core_foundation::{
-    array::CFArray,
     base::{CFType, CFTypeRef, TCFType},
     boolean::CFBoolean,
     dictionary::CFDictionary,
-    number::CFNumber,
-    string::{CFString, CFStringRef},
+    string::CFString,
 };
-use core_graphics::{
-    geometry::{CGPoint, CGSize},
-    window::{
-        self as cg_window, CGWindowID, kCGNullWindowID, kCGWindowLayer,
-        kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowName,
-        kCGWindowNumber, kCGWindowOwnerPID,
-    },
-};
+use core_graphics::geometry::{CGPoint, CGSize};
 use objc2_app_kit::NSRunningApplication;
 use panes_core::{Rect, WindowId};
 use panes_platform::{PlatformError, PlatformResult, WindowInfo};
@@ -32,6 +22,7 @@ use panes_platform::{PlatformError, PlatformResult, WindowInfo};
 use crate::{coordinates::CoordinateSpace, screen};
 
 const ACCESSIBILITY_PERMISSION_ERROR: &str = "Enable Accessibility access for panes in System Settings > Privacy & Security > Accessibility, then restart panes";
+const AX_ENHANCED_USER_INTERFACE_ATTRIBUTE: &str = "AXEnhancedUserInterface";
 
 #[derive(Default)]
 pub(crate) struct WindowCache {
@@ -48,8 +39,8 @@ impl WindowCache {
     }
 
     /// AXUIElements that refer to the same window compare CFEqual, so a hit
-    /// here recovers the id assigned on an earlier command and skips the
-    /// whole-desktop `CGWindowListCopyWindowInfo` scan in `window_id`.
+    /// here preserves the window identity across successive accessibility
+    /// reads.
     pub(crate) fn known_id(&self, window: &AXUIElement) -> Option<WindowId> {
         self.windows
             .borrow()
@@ -70,18 +61,11 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
         return Ok(None);
     };
     let _ = application.set_messaging_timeout(1.0);
-    let window = match application.attribute(&AXAttribute::focused_window()) {
-        Ok(window) => window,
-        Err(error) if optional_accessibility_error(&error) => return Ok(None),
-        Err(error) => {
-            return Err(map_accessibility_error(
-                "failed to read focused macOS window",
-                error,
-            ));
-        }
+    let Some(window) = focused_or_first_window(&application)? else {
+        return Ok(None);
     };
 
-    if !is_standard_window(&window)? {
+    if !is_window(&window)? {
         return Ok(None);
     }
 
@@ -92,11 +76,9 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
     Ok(Some(info))
 }
 
-/// Callers are expected to reject minimized or non-resizable windows using
-/// the `WindowInfo` returned by `front_window`; re-reading those attributes
-/// here would cost two more synchronous round trips per command, and the AX
-/// writes below fail with a descriptive error anyway if the window state
-/// changed in between.
+/// Callers reject hidden or minimized windows using the `WindowInfo` returned
+/// by `front_window`. Frame writes are intentionally best-effort: macOS apps
+/// vary in whether they support changing size, position, or both.
 pub(crate) fn set_window_rect(
     cache: &WindowCache,
     window_id: WindowId,
@@ -108,35 +90,26 @@ pub(crate) fn set_window_rect(
     ))?;
 
     let space = screen::coordinate_space()?;
-    let native_rect = space.panes_rect_to_native(rect);
-    let size = CGSize::new(native_rect.size.width, native_rect.size.height);
-    let position = CGPoint::new(native_rect.origin.x, native_rect.origin.y);
+    let requested_native_rect = space.panes_rect_to_native(rect);
+    let current_native_rect = native_window_rect(&window)?;
+    let destination_work_area = destination_work_area(space, requested_native_rect);
 
-    let current_position = ax_point(&window, kAXPositionAttribute)?;
-    let current_size = ax_size(&window, kAXSizeAttribute)?;
-    let position_changed = !coordinates_match(current_position.x, position.x)
-        || !coordinates_match(current_position.y, position.y);
-    let size_changed = !coordinates_match(current_size.width, size.width)
-        || !coordinates_match(current_size.height, size.height);
-
-    // Apply position first, then size, skipping attributes that already
-    // match. Position writes are never clamped by macOS — only size writes
-    // are, and only against the screen edges from the window's *current*
-    // origin. Layout targets always fit their work area, so once the window
-    // sits at the target origin a single size write cannot be clamped. This
-    // needs at most one synchronous relayout in the target app (the expensive
-    // call) where the old size → position → size dance needed two, and a pure
-    // move needs none. The final `window_rect` re-read still reports whatever
-    // actually held, so any legitimate app constraint (min/max sizes,
-    // Terminal's character grid) remains truthful in history.
-    if position_changed {
-        set_ax_point(&window, kAXPositionAttribute, position)?;
-    }
-    if size_changed {
-        set_ax_size(&window, kAXSizeAttribute, size)?;
+    // Chromium-based apps can enable this application-level accessibility
+    // mode, which prevents ordinary window frame updates. Disable it around
+    // the write when present and restore the previous state afterwards.
+    let enhanced_ui_application = temporarily_disable_enhanced_user_interface(&window);
+    let result = apply_window_frame(
+        &window,
+        space,
+        current_native_rect,
+        requested_native_rect,
+        destination_work_area,
+    );
+    if let Some(application) = enhanced_ui_application {
+        let _ = set_enhanced_user_interface(&application, true);
     }
 
-    window_rect(&window, space)
+    result
 }
 
 /// Sub-pixel differences come from float round-tripping through the panes
@@ -144,6 +117,204 @@ pub(crate) fn set_window_rect(
 /// and skip the synchronous write.
 fn coordinates_match(left: f64, right: f64) -> bool {
     (left - right).abs() < 0.1
+}
+
+fn apply_window_frame(
+    window: &AXUIElement,
+    space: CoordinateSpace,
+    current: Rect,
+    requested: Rect,
+    destination_work_area: Rect,
+) -> PlatformResult<Rect> {
+    let can_resize = is_size_settable(window);
+    let target = if can_resize {
+        requested
+    } else {
+        align_constrained_rect(current, requested, destination_work_area)
+    };
+    let size_changed = !coordinates_match(current.size.width, target.size.width)
+        || !coordinates_match(current.size.height, target.size.height);
+    let position_changed = !coordinates_match(current.origin.x, target.origin.x)
+        || !coordinates_match(current.origin.y, target.origin.y);
+    let mut first_error = None;
+
+    // macOS constrains an AXSize update to the display the window is currently
+    // on. Resizing before and after the position update lets cross-display
+    // changes succeed in Chromium and other apps that enforce that rule.
+    if can_resize && size_changed {
+        remember_first_error(
+            &mut first_error,
+            set_ax_size(
+                window,
+                kAXSizeAttribute,
+                CGSize::new(target.size.width, target.size.height),
+            ),
+        );
+    }
+    if position_changed {
+        remember_first_error(
+            &mut first_error,
+            set_ax_point(
+                window,
+                kAXPositionAttribute,
+                CGPoint::new(target.origin.x, target.origin.y),
+            ),
+        );
+    }
+    if can_resize && size_changed {
+        remember_first_error(
+            &mut first_error,
+            set_ax_size(
+                window,
+                kAXSizeAttribute,
+                CGSize::new(target.size.width, target.size.height),
+            ),
+        );
+    }
+
+    let mut applied = native_window_rect(window)?;
+    let aligned = align_constrained_rect(applied, requested, destination_work_area);
+    if !coordinates_match(applied.origin.x, aligned.origin.x)
+        || !coordinates_match(applied.origin.y, aligned.origin.y)
+    {
+        remember_first_error(
+            &mut first_error,
+            set_ax_point(
+                window,
+                kAXPositionAttribute,
+                CGPoint::new(aligned.origin.x, aligned.origin.y),
+            ),
+        );
+        applied = native_window_rect(window)?;
+    }
+
+    if native_rects_match(applied, current)
+        && !native_rects_match(requested, current)
+        && let Some(error) = first_error
+    {
+        return Err(error);
+    }
+
+    Ok(space.native_rect_to_panes(applied))
+}
+
+fn remember_first_error(first_error: &mut Option<PlatformError>, result: PlatformResult<()>) {
+    if let Err(error) = result
+        && first_error.is_none()
+    {
+        *first_error = Some(error);
+    }
+}
+
+fn destination_work_area(space: CoordinateSpace, requested_native_rect: Rect) -> Rect {
+    let requested_panes_rect = space.native_rect_to_panes(requested_native_rect);
+
+    screen::screens()
+        .ok()
+        .and_then(|screens| {
+            screens
+                .into_iter()
+                .filter_map(|screen| {
+                    screen
+                        .work_area
+                        .intersection(requested_panes_rect)
+                        .map(|overlap| (screen.work_area, overlap.area()))
+                })
+                .max_by(|(_, left_area), (_, right_area)| left_area.total_cmp(right_area))
+                .map(|(work_area, _)| space.panes_rect_to_native(work_area))
+        })
+        .unwrap_or(requested_native_rect)
+}
+
+fn align_constrained_rect(actual: Rect, zone: Rect, work_area: Rect) -> Rect {
+    Rect::new(
+        aligned_axis_origin(
+            actual.min_x(),
+            actual.size.width,
+            zone.min_x(),
+            zone.size.width,
+            work_area.min_x(),
+            work_area.size.width,
+        ),
+        aligned_axis_origin(
+            actual.min_y(),
+            actual.size.height,
+            zone.min_y(),
+            zone.size.height,
+            work_area.min_y(),
+            work_area.size.height,
+        ),
+        actual.size.width,
+        actual.size.height,
+    )
+}
+
+fn aligned_axis_origin(
+    _actual_origin: f64,
+    actual_size: f64,
+    zone_origin: f64,
+    zone_size: f64,
+    work_area_origin: f64,
+    work_area_size: f64,
+) -> f64 {
+    let zone_max = zone_origin + zone_size;
+    let work_area_max = work_area_origin + work_area_size;
+    let zone_touches_start = coordinates_match(zone_origin, work_area_origin);
+    let zone_touches_end = coordinates_match(zone_max, work_area_max);
+    let origin =
+        if coordinates_match(actual_size, zone_size) || zone_touches_start && zone_touches_end {
+            zone_origin + (zone_size - actual_size) / 2.0
+        } else if zone_touches_start {
+            zone_origin
+        } else if zone_touches_end {
+            zone_max - actual_size
+        } else {
+            zone_origin + (zone_size - actual_size) / 2.0
+        };
+
+    if actual_size <= work_area_size {
+        origin.clamp(work_area_origin, work_area_max - actual_size)
+    } else {
+        work_area_origin
+    }
+}
+
+fn native_rects_match(left: Rect, right: Rect) -> bool {
+    coordinates_match(left.origin.x, right.origin.x)
+        && coordinates_match(left.origin.y, right.origin.y)
+        && coordinates_match(left.size.width, right.size.width)
+        && coordinates_match(left.size.height, right.size.height)
+}
+
+fn temporarily_disable_enhanced_user_interface(window: &AXUIElement) -> Option<AXUIElement> {
+    let application = AXUIElement::application(element_pid(window).ok()?);
+    let _ = application.set_messaging_timeout(1.0);
+
+    if optional_custom_cf_boolean(&application, AX_ENHANCED_USER_INTERFACE_ATTRIBUTE)
+        .ok()
+        .flatten()
+        == Some(true)
+        && set_enhanced_user_interface(&application, false).is_ok()
+    {
+        Some(application)
+    } else {
+        None
+    }
+}
+
+fn set_enhanced_user_interface(application: &AXUIElement, enabled: bool) -> PlatformResult<()> {
+    let attribute = AXAttribute::<CFType>::new(&CFString::from_static_string(
+        AX_ENHANCED_USER_INTERFACE_ATTRIBUTE,
+    ));
+    let value = if enabled {
+        CFBoolean::true_value()
+    } else {
+        CFBoolean::false_value()
+    };
+
+    application
+        .set_attribute(&attribute, value.as_CFType())
+        .map_err(|error| map_accessibility_error("failed to set macOS enhanced UI mode", error))
 }
 
 fn focused_application(system: &AXUIElement) -> PlatformResult<Option<AXUIElement>> {
@@ -169,6 +340,29 @@ fn focused_application(system: &AXUIElement) -> PlatformResult<Option<AXUIElemen
     }
 }
 
+fn focused_or_first_window(application: &AXUIElement) -> PlatformResult<Option<AXUIElement>> {
+    match application.attribute(&AXAttribute::focused_window()) {
+        Ok(window) if is_window(&window)? => return Ok(Some(window)),
+        // Some Chromium PWAs and system windows do not expose a focused AX
+        // window reliably. Their application window list is still usable.
+        Ok(_) | Err(_) => {}
+    }
+
+    let windows = match application.attribute(&AXAttribute::windows()) {
+        Ok(windows) => windows,
+        Err(_) => return Ok(None),
+    };
+
+    for window in &windows {
+        let window = window.clone();
+        if is_window(&window)? {
+            return Ok(Some(window));
+        }
+    }
+
+    Ok(None)
+}
+
 fn ensure_accessibility_permission() -> PlatformResult<()> {
     let prompt_key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
     let options = CFDictionary::from_CFType_pairs(&[(prompt_key, CFBoolean::true_value())]);
@@ -191,7 +385,7 @@ fn window_info(
     let pid = element_pid(window)?;
     let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid);
     let title = optional_cf_string(window, &AXAttribute::title())?.unwrap_or_default();
-    let id = known_id.unwrap_or_else(|| window_id(window, pid, &title));
+    let id = known_id.unwrap_or_else(|| window_id(window));
 
     Ok(WindowInfo {
         id,
@@ -208,92 +402,27 @@ fn window_info(
     })
 }
 
-fn is_standard_window(window: &AXUIElement) -> PlatformResult<bool> {
-    if optional_cf_string(window, &AXAttribute::role())?.as_deref() != Some(kAXWindowRole) {
-        return Ok(false);
-    }
-
-    if let Some(subrole) = optional_cf_string(window, &AXAttribute::subrole())?
-        && subrole != kAXStandardWindowSubrole
-    {
-        return Ok(false);
-    }
-
-    Ok(true)
+fn is_window(window: &AXUIElement) -> PlatformResult<bool> {
+    Ok(optional_cf_string(window, &AXAttribute::role())?.as_deref() == Some(kAXWindowRole))
 }
 
 fn window_rect(window: &AXUIElement, space: CoordinateSpace) -> PlatformResult<Rect> {
-    let position = ax_point(window, kAXPositionAttribute)?;
-    let size = ax_size(window, kAXSizeAttribute)?;
-    let native_rect = Rect::new(position.x, position.y, size.width, size.height);
-
-    Ok(space.native_rect_to_panes(native_rect))
+    Ok(space.native_rect_to_panes(native_window_rect(window)?))
 }
 
-fn window_id(window: &AXUIElement, pid: pid_t, title: &str) -> WindowId {
-    cg_window_id(pid, title)
-        .map(|id| WindowId(u64::from(id)))
-        .unwrap_or_else(|| ax_pointer_window_id(window))
+fn native_window_rect(window: &AXUIElement) -> PlatformResult<Rect> {
+    let position = ax_point(window, kAXPositionAttribute)?;
+    let size = ax_size(window, kAXSizeAttribute)?;
+
+    Ok(Rect::new(position.x, position.y, size.width, size.height))
+}
+
+fn window_id(window: &AXUIElement) -> WindowId {
+    ax_pointer_window_id(window)
 }
 
 fn ax_pointer_window_id(window: &AXUIElement) -> WindowId {
     WindowId(window.as_concrete_TypeRef() as usize as u64)
-}
-
-fn cg_window_id(pid: pid_t, title: &str) -> Option<CGWindowID> {
-    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
-    let raw_windows = cg_window::copy_window_info(options, kCGNullWindowID)?;
-    // SAFETY: CGWindowListCopyWindowInfo returns an array of dictionaries keyed by CFString with
-    // CoreFoundation property-list values.
-    let windows: CFArray<CFDictionary<CFString, CFType>> =
-        unsafe { CFArray::wrap_under_get_rule(raw_windows.as_concrete_TypeRef()) };
-    let mut first_pid_window = None;
-
-    for window in &windows {
-        if cg_i64(&window, unsafe { kCGWindowOwnerPID }) != Some(i64::from(pid)) {
-            continue;
-        }
-
-        if cg_i64(&window, unsafe { kCGWindowLayer }).unwrap_or_default() != 0 {
-            continue;
-        }
-
-        let Some(id) =
-            cg_i64(&window, unsafe { kCGWindowNumber }).and_then(|id| id.try_into().ok())
-        else {
-            continue;
-        };
-        if first_pid_window.is_none() {
-            first_pid_window = Some(id);
-        }
-
-        if !title.is_empty()
-            && cg_string(&window, unsafe { kCGWindowName }).as_deref() == Some(title)
-        {
-            return Some(id);
-        }
-    }
-
-    first_pid_window
-}
-
-fn cg_i64(window: &CFDictionary<CFString, CFType>, key: CFStringRef) -> Option<i64> {
-    window
-        .find(cf_string_key(key))?
-        .downcast::<CFNumber>()?
-        .to_i64()
-}
-
-fn cg_string(window: &CFDictionary<CFString, CFType>, key: CFStringRef) -> Option<String> {
-    window
-        .find(cf_string_key(key))?
-        .downcast::<CFString>()
-        .map(|value| value.to_string())
-}
-
-fn cf_string_key(key: CFStringRef) -> CFString {
-    // SAFETY: CoreGraphics exposes these dictionary keys as process-lifetime CFString constants.
-    unsafe { CFString::wrap_under_get_rule(key) }
 }
 
 fn element_pid(element: &AXUIElement) -> PlatformResult<pid_t> {
@@ -320,6 +449,21 @@ fn optional_cf_boolean(
     attribute: &AXAttribute<CFBoolean>,
 ) -> PlatformResult<Option<bool>> {
     Ok(optional_attribute(element, attribute)?.map(bool::from))
+}
+
+fn optional_custom_cf_boolean(
+    element: &AXUIElement,
+    name: &'static str,
+) -> PlatformResult<Option<bool>> {
+    let attribute = AXAttribute::<CFType>::new(&CFString::from_static_string(name));
+    match element.attribute(&attribute) {
+        Ok(value) => Ok(value.downcast::<CFBoolean>().map(bool::from)),
+        Err(error) if optional_accessibility_error(&error) => Ok(None),
+        Err(error) => Err(map_accessibility_error(
+            "failed to read macOS accessibility attribute",
+            error,
+        )),
+    }
 }
 
 fn optional_attribute<T: TCFType>(
@@ -488,5 +632,45 @@ fn ax_error(context: &'static str, error: AXError) -> PlatformError {
         PlatformError::PermissionDenied(ACCESSIBILITY_PERMISSION_ERROR)
     } else {
         PlatformError::Native(format!("{context}: {}", error_string(error)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constrained_windows_anchor_to_the_matching_half_edge() {
+        let work_area = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let actual = Rect::new(200.0, 100.0, 600.0, 800.0);
+
+        let left = align_constrained_rect(actual, Rect::new(0.0, 0.0, 500.0, 800.0), work_area);
+        let right = align_constrained_rect(actual, Rect::new(500.0, 0.0, 500.0, 800.0), work_area);
+
+        assert_eq!(left, Rect::new(0.0, 0.0, 600.0, 800.0));
+        assert_eq!(right, Rect::new(400.0, 0.0, 600.0, 800.0));
+    }
+
+    #[test]
+    fn fixed_size_move_uses_the_requested_position() {
+        let work_area = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let actual = Rect::new(100.0, 100.0, 200.0, 100.0);
+        let target = Rect::new(800.0, 100.0, 200.0, 100.0);
+
+        assert_eq!(
+            align_constrained_rect(actual, target, work_area),
+            Rect::new(800.0, 100.0, 200.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn oversized_constrained_windows_anchor_at_the_destination_work_area_start() {
+        let work_area = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let actual = Rect::new(-500.0, 0.0, 1200.0, 100.0);
+
+        assert_eq!(
+            align_constrained_rect(actual, Rect::new(0.0, 0.0, 500.0, 800.0), work_area),
+            Rect::new(0.0, 350.0, 1200.0, 100.0)
+        );
     }
 }

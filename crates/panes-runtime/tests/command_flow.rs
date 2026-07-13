@@ -243,14 +243,14 @@ fn window_spanning_two_displays_uses_the_largest_overlap() {
 
 #[test]
 fn window_already_at_the_target_rect_still_succeeds() {
-    let target = Rect::new(0.0, 0.0, 500.0, 800.0);
+    let target = Rect::new(250.0, 0.0, 500.0, 800.0);
     let platform = FakePlatform {
         front_window: Some(window(target)),
         ..FakePlatform::new()
     };
     let mut executor = CommandExecutor::with_default_config(platform);
 
-    let execution = executor.execute(keyboard(Command::LeftHalf)).unwrap();
+    let execution = executor.execute(keyboard(Command::CenterHalf)).unwrap();
 
     assert_eq!(execution.requested_rect, target);
     assert_eq!(executor.history().restore_rect(WINDOW_ID), Some(target));
@@ -308,13 +308,6 @@ fn no_command_panics_on_unsupported_windows() {
                 ..window(Rect::new(100.0, 100.0, 200.0, 100.0))
             },
             UnsupportedWindowReason::Minimized,
-        ),
-        (
-            WindowInfo {
-                is_resizable: false,
-                ..window(Rect::new(100.0, 100.0, 200.0, 100.0))
-            },
-            UnsupportedWindowReason::NotResizable,
         ),
     ];
 
