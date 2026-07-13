@@ -72,6 +72,16 @@ Requires at least two displays. Repeat with displays arranged side by side.
 | Focused window on display A, cursor on display B | Commands act on the focused window's display | ☐ |
 | Displays with different resolutions | No offset drift; window lands inside the target work area | ☐ |
 | Menu bar / Dock on either display | Work area excludes them on every display | ☐ |
+| Repeated Left/Right Half | `left → right → next display left → next display right`; wraps at the outer edge | ☐ |
+| Repeated Move at a display edge | Window enters the adjacent display at its near edge and wraps at the outer edge | ☐ |
+
+## Application Compatibility
+
+| Scenario | Expected result | Pass |
+| --- | --- | --- |
+| Chrome or a Chrome PWA | Window can be moved and resized | ☐ |
+| Fixed-size or minimum-size app (e.g. Activity Monitor) | Window moves into the requested zone and remains on-screen at an allowed size | ☐ |
+| System Settings | Window moves; any macOS-enforced size limit is preserved | ☐ |
 
 ## Gaps and Ratios
 
@@ -90,14 +100,14 @@ Validate by running with a modified `LayoutConfig` in a dev build.
 | --- | --- | --- |
 | No window focused (Finder desktop) | Error logged, no crash | ☐ |
 | Minimized window | Command refused, no crash | ☐ |
-| Non-resizable window (e.g. System Settings) | Command refused, no crash | ☐ |
+| Non-resizable window | Window moves within its allowed size, no crash | ☐ |
 | macOS full-screen window | Command refused or no-op, no crash | ☐ |
 
 ## Known Limitations
 
 - Adjacent tiled windows get a doubled gap seam
   ([#12](https://github.com/martinbha/panes/issues/12)).
-- Repeating a command re-applies the same rect; there is no size cycling yet
+- Size cycling is not implemented for repeated commands
   ([#13](https://github.com/martinbha/panes/issues/13)).
 - Grow can push a window past the screen edge, and display attach/detach and
   offscreen safety are not hardened yet
