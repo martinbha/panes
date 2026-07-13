@@ -4,9 +4,10 @@ use accessibility::{AXAttribute, AXUIElement, Error as AccessibilityError};
 use accessibility_sys::{
     AXError, AXIsProcessTrustedWithOptions, AXUIElementGetPid, AXUIElementSetAttributeValue,
     AXValueCreate, AXValueGetType, AXValueGetTypeID, AXValueGetValue, AXValueRef, error_string,
-    kAXErrorAPIDisabled, kAXErrorAttributeUnsupported, kAXErrorNoValue,
-    kAXFocusedApplicationAttribute, kAXPositionAttribute, kAXSizeAttribute,
-    kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowRole, pid_t,
+    kAXErrorAPIDisabled, kAXErrorAttributeUnsupported, kAXErrorNoValue, kAXFloatingWindowSubrole,
+    kAXFocusedApplicationAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXSystemDialogSubrole,
+    kAXSystemFloatingWindowSubrole, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint,
+    kAXValueTypeCGSize, kAXWindowRole, pid_t,
 };
 use core_foundation::{
     base::{CFType, CFTypeRef, TCFType},
@@ -23,6 +24,7 @@ use crate::{coordinates::CoordinateSpace, screen};
 
 const ACCESSIBILITY_PERMISSION_ERROR: &str = "Enable Accessibility access for panes in System Settings > Privacy & Security > Accessibility, then restart panes";
 const AX_ENHANCED_USER_INTERFACE_ATTRIBUTE: &str = "AXEnhancedUserInterface";
+const AX_FULL_SCREEN_ATTRIBUTE: &str = "AXFullScreen";
 
 #[derive(Default)]
 pub(crate) struct WindowCache {
@@ -412,11 +414,22 @@ fn window_info(
         is_resizable: is_size_settable(window),
         is_minimized: optional_cf_boolean(window, &AXAttribute::minimized())?.unwrap_or(false),
         is_hidden: app.as_ref().is_some_and(|app| app.isHidden()),
+        is_fullscreen: optional_custom_cf_boolean(window, AX_FULL_SCREEN_ATTRIBUTE)?
+            .unwrap_or(false),
     })
 }
 
 fn is_window(window: &AXUIElement) -> PlatformResult<bool> {
-    Ok(optional_cf_string(window, &AXAttribute::role())?.as_deref() == Some(kAXWindowRole))
+    if optional_cf_string(window, &AXAttribute::role())?.as_deref() != Some(kAXWindowRole) {
+        return Ok(false);
+    }
+
+    let subrole = optional_cf_string(window, &AXAttribute::subrole())?;
+    Ok(!subrole.as_deref().is_some_and(|subrole| {
+        subrole == kAXSystemDialogSubrole
+            || subrole == kAXFloatingWindowSubrole
+            || subrole == kAXSystemFloatingWindowSubrole
+    }))
 }
 
 fn window_rect(window: &AXUIElement, space: CoordinateSpace) -> PlatformResult<Rect> {

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use panes_core::{Command, LayoutConfig, LayoutRequest, Rect, WindowHistory, WindowId, calculate};
 use panes_platform::{
     CommandInvocation, NativePlatform, PlatformError, ScreenId, ScreenInfo, WindowInfo,
@@ -10,6 +12,8 @@ pub struct CommandExecutor<P> {
     platform: P,
     config: LayoutConfig,
     history: WindowHistory,
+    window_identities: HashMap<WindowId, WindowIdentity>,
+    screen_configuration: Option<Vec<ScreenGeometry>>,
 }
 
 impl<P> CommandExecutor<P> {
@@ -19,6 +23,8 @@ impl<P> CommandExecutor<P> {
             platform,
             config,
             history: WindowHistory::default(),
+            window_identities: HashMap::new(),
+            screen_configuration: None,
         }
     }
 
@@ -91,22 +97,57 @@ impl<P: NativePlatform> CommandExecutor<P> {
         if screens.is_empty() {
             return Err(CommandExecutionError::NoScreens);
         }
+        if let Some(screen) = screens.iter().find(|screen| {
+            !screen.frame.is_valid()
+                || !screen.work_area.is_valid()
+                || !rect_contains_with_tolerance(screen.frame, screen.work_area)
+        }) {
+            return Err(CommandExecutionError::InvalidScreenGeometry {
+                screen_id: screen.id,
+            });
+        }
+
+        self.refresh_history_context(&window, &screens);
 
         let mut screen = self.current_screen(&window, &screens)?;
         let mut resulting_command = invocation.command;
         let requested_rect = if invocation.command == Command::Restore {
-            self.history
-                .restore_rect(window.id)
-                .ok_or(CommandExecutionError::NoRestoreRect {
+            let restore_rect = self.history.restore_rect(window.id).ok_or(
+                CommandExecutionError::NoRestoreRect {
                     window_id: window.id,
-                })?
-        } else {
-            let mut rect = window.rect;
-            let mut previous_command = self
+                },
+            )?;
+            if !self
                 .history
                 .last_command(window.id)
-                .filter(|record| rects_match(record.rect, rect))
-                .map(|record| (record.command, record.rect));
+                .is_some_and(|record| rects_match(record.rect, window.rect))
+            {
+                self.history.clear_window(window.id);
+                return Err(CommandExecutionError::StaleWindowHistory {
+                    window_id: window.id,
+                });
+            }
+            if let Some(restore_screen) = screen_with_largest_window_overlap(restore_rect, &screens)
+            {
+                screen = restore_screen;
+            }
+            fit_rect_to_work_area(restore_rect, screen.work_area)
+        } else {
+            let matching_record = self
+                .history
+                .last_command(window.id)
+                .filter(|record| rects_match(record.rect, window.rect));
+            let mut rect = matching_record
+                .filter(|record| record.command == invocation.command)
+                .map_or(window.rect, |record| record.requested_rect);
+            let mut previous_command = matching_record.map(|record| {
+                let previous_rect = if record.command == invocation.command {
+                    record.requested_rect
+                } else {
+                    record.rect
+                };
+                (record.command, previous_rect)
+            });
 
             for _ in 0..repeats.max(1) {
                 let mut layout_command = invocation.command;
@@ -131,13 +172,19 @@ impl<P: NativePlatform> CommandExecutor<P> {
                 resulting_command = layout_command;
                 previous_command = Some((layout_command, rect));
             }
-            rect
+            fit_rect_to_work_area(rect, screen.work_area)
         };
 
-        let applied_rect = self
-            .platform
-            .set_window_rect(window.id, requested_rect)
-            .map_err(CommandExecutionError::Platform)?;
+        let applied_rect = match self.platform.set_window_rect(window.id, requested_rect) {
+            Ok(rect) => rect,
+            Err(error) => {
+                if matches!(error, PlatformError::NotFound(_)) {
+                    self.history.clear_window(window.id);
+                    self.window_identities.remove(&window.id);
+                }
+                return Err(CommandExecutionError::Platform(error));
+            }
+        };
 
         if invocation.command == Command::Restore {
             self.history.clear_restore_rect(window.id);
@@ -145,8 +192,12 @@ impl<P: NativePlatform> CommandExecutor<P> {
             self.history.set_restore_rect(window.id, window.rect);
         }
 
-        self.history
-            .record_command(window.id, resulting_command, applied_rect);
+        self.history.record_applied_command(
+            window.id,
+            resulting_command,
+            requested_rect,
+            applied_rect,
+        );
 
         Ok(CommandExecution {
             invocation,
@@ -176,6 +227,48 @@ impl<P: NativePlatform> CommandExecutor<P> {
             window_id: window.id,
         })
     }
+
+    fn refresh_history_context(&mut self, window: &WindowInfo, screens: &[ScreenInfo]) {
+        let identity = WindowIdentity::from(window);
+        if self
+            .window_identities
+            .insert(window.id, identity.clone())
+            .is_some_and(|previous| previous != identity)
+        {
+            self.history.clear_window(window.id);
+        }
+
+        let configuration = screen_configuration(screens);
+        if self
+            .screen_configuration
+            .replace(configuration.clone())
+            .is_some_and(|previous| !screen_configurations_match(&previous, &configuration))
+        {
+            self.history.clear();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct WindowIdentity {
+    app_id: String,
+    title: String,
+}
+
+impl From<&WindowInfo> for WindowIdentity {
+    fn from(window: &WindowInfo) -> Self {
+        Self {
+            app_id: window.app_id.clone(),
+            title: window.title.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ScreenGeometry {
+    id: ScreenId,
+    frame: Rect,
+    work_area: Rect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -193,10 +286,16 @@ pub enum CommandExecutionError {
     Platform(PlatformError),
     NoFocusedWindow,
     NoScreens,
+    InvalidScreenGeometry {
+        screen_id: ScreenId,
+    },
     NoTargetScreen {
         window_id: WindowId,
     },
     NoRestoreRect {
+        window_id: WindowId,
+    },
+    StaleWindowHistory {
         window_id: WindowId,
     },
     UnsupportedWindow {
@@ -211,11 +310,17 @@ impl std::fmt::Display for CommandExecutionError {
             Self::Platform(error) => write!(formatter, "platform error: {error:?}"),
             Self::NoFocusedWindow => write!(formatter, "no focused window"),
             Self::NoScreens => write!(formatter, "no screens available"),
+            Self::InvalidScreenGeometry { screen_id } => {
+                write!(formatter, "invalid geometry for screen {screen_id:?}")
+            }
             Self::NoTargetScreen { window_id } => {
                 write!(formatter, "no target screen for window {window_id:?}")
             }
             Self::NoRestoreRect { window_id } => {
                 write!(formatter, "no restore rect for window {window_id:?}")
+            }
+            Self::StaleWindowHistory { window_id } => {
+                write!(formatter, "stale history for window {window_id:?}")
             }
             Self::UnsupportedWindow { window_id, reason } => {
                 write!(formatter, "unsupported window {window_id:?}: {reason:?}")
@@ -230,6 +335,8 @@ impl std::error::Error for CommandExecutionError {}
 pub enum UnsupportedWindowReason {
     Hidden,
     Minimized,
+    Fullscreen,
+    InvalidGeometry,
     NotResizable,
 }
 
@@ -238,6 +345,10 @@ fn validate_window(window: &WindowInfo) -> CommandExecutionResult<()> {
         Some(UnsupportedWindowReason::Hidden)
     } else if window.is_minimized {
         Some(UnsupportedWindowReason::Minimized)
+    } else if window.is_fullscreen {
+        Some(UnsupportedWindowReason::Fullscreen)
+    } else if !window.rect.is_valid() {
+        Some(UnsupportedWindowReason::InvalidGeometry)
     } else {
         None
     };
@@ -263,7 +374,11 @@ fn screen_with_largest_window_overlap(
                 .intersection(screen.frame)
                 .map(|intersection| (screen, intersection.area()))
         })
-        .max_by(|(_, left_area), (_, right_area)| left_area.total_cmp(right_area))
+        .min_by(|(left_screen, left_area), (right_screen, right_area)| {
+            right_area
+                .total_cmp(left_area)
+                .then_with(|| left_screen.id.0.cmp(&right_screen.id.0))
+        })
         .map(|(screen, _)| screen)
 }
 
@@ -274,6 +389,61 @@ fn screen_containing_point(
     screens
         .iter()
         .find(|screen| screen.frame.contains_point(point))
+}
+
+fn fit_rect_to_work_area(rect: Rect, work_area: Rect) -> Rect {
+    let width = rect.size.width.min(work_area.size.width);
+    let height = rect.size.height.min(work_area.size.height);
+    let x = rect.origin.x.clamp(
+        work_area.min_x(),
+        work_area.origin.x + (work_area.size.width - width),
+    );
+    let y = rect.origin.y.clamp(
+        work_area.min_y(),
+        work_area.origin.y + (work_area.size.height - height),
+    );
+
+    Rect::new(x, y, width, height)
+}
+
+fn screen_configuration(screens: &[ScreenInfo]) -> Vec<ScreenGeometry> {
+    let mut configuration: Vec<_> = screens
+        .iter()
+        .map(|screen| ScreenGeometry {
+            id: screen.id,
+            frame: screen.frame,
+            work_area: screen.work_area,
+        })
+        .collect();
+    configuration.sort_by_key(|screen| screen.id.0);
+    configuration
+}
+
+fn screen_configurations_match(left: &[ScreenGeometry], right: &[ScreenGeometry]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.id == right.id
+                && geometry_rects_match(left.frame, right.frame)
+                && geometry_rects_match(left.work_area, right.work_area)
+        })
+}
+
+fn geometry_rects_match(left: Rect, right: Rect) -> bool {
+    const TOLERANCE: f64 = 0.1;
+
+    (left.origin.x - right.origin.x).abs() <= TOLERANCE
+        && (left.origin.y - right.origin.y).abs() <= TOLERANCE
+        && (left.size.width - right.size.width).abs() <= TOLERANCE
+        && (left.size.height - right.size.height).abs() <= TOLERANCE
+}
+
+fn rect_contains_with_tolerance(container: Rect, candidate: Rect) -> bool {
+    const TOLERANCE: f64 = 0.1;
+
+    candidate.min_x() >= container.min_x() - TOLERANCE
+        && candidate.min_y() >= container.min_y() - TOLERANCE
+        && candidate.max_x() <= container.max_x() + TOLERANCE
+        && candidate.max_y() <= container.max_y() + TOLERANCE
 }
 
 fn navigates_between_screens(command: Command) -> bool {
@@ -541,6 +711,25 @@ mod tests {
     }
 
     #[test]
+    fn equal_screen_overlap_uses_stable_id_tiebreaker() {
+        let screens = vec![screen(2, 1000.0), screen(1, 0.0)];
+        let spanning = Rect::new(750.0, 100.0, 500.0, 200.0);
+
+        let selected = screen_with_largest_window_overlap(spanning, &screens).unwrap();
+
+        assert_eq!(selected.id, ScreenId(1));
+    }
+
+    #[test]
+    fn subpixel_work_area_fitting_does_not_panic() {
+        let work_area = Rect::new(10.0, 20.0, 0.5, 0.25);
+
+        let fitted = fit_rect_to_work_area(Rect::new(100.0, 100.0, 200.0, 100.0), work_area);
+
+        assert_eq!(fitted, work_area);
+    }
+
+    #[test]
     fn repeated_right_half_enters_the_adjacent_display_at_its_left_half() {
         let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
 
@@ -773,7 +962,8 @@ mod tests {
     fn restores_previous_rect_after_successful_command() {
         let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
 
-        executor.execute(invocation(Command::LeftHalf)).unwrap();
+        let moved = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(moved.applied_rect)));
         let restore = executor.execute(invocation(Command::Restore)).unwrap();
 
         assert_eq!(
@@ -794,8 +984,10 @@ mod tests {
     fn preserves_first_restore_rect_across_multiple_commands() {
         let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
 
-        executor.execute(invocation(Command::LeftHalf)).unwrap();
-        executor.execute(invocation(Command::Maximize)).unwrap();
+        let tiled = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(tiled.applied_rect)));
+        let maximized = executor.execute(invocation(Command::Maximize)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(maximized.applied_rect)));
 
         assert_eq!(
             executor.history().restore_rect(WindowId(42)),
@@ -857,6 +1049,52 @@ mod tests {
         let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
 
         assert_eq!(error, CommandExecutionError::NoScreens);
+    }
+
+    #[test]
+    fn reports_invalid_screen_geometry_before_layout() {
+        let platform = FakePlatform {
+            screens: Ok(vec![screen_with_frame(
+                1,
+                Rect::new(0.0, 0.0, f64::NAN, 800.0),
+            )]),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::InvalidScreenGeometry {
+                screen_id: ScreenId(1)
+            }
+        );
+        assert!(executor.platform().set_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn reports_work_area_outside_its_screen_frame() {
+        let platform = FakePlatform {
+            screens: Ok(vec![ScreenInfo {
+                id: ScreenId(1),
+                name: "Invalid Screen".to_owned(),
+                frame: Rect::new(0.0, 0.0, 1000.0, 800.0),
+                work_area: Rect::new(2000.0, 0.0, 1000.0, 800.0),
+            }]),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+
+        let error = executor.execute(invocation(Command::Maximize)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::InvalidScreenGeometry {
+                screen_id: ScreenId(1)
+            }
+        );
+        assert!(executor.platform().set_calls.borrow().is_empty());
     }
 
     #[test]
@@ -955,6 +1193,123 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reused_window_id_cannot_restore_a_different_window() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+        let moved = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(WindowInfo {
+            app_id: "different.app".to_owned(),
+            title: "Different Window".to_owned(),
+            ..window(moved.applied_rect)
+        }));
+
+        let error = executor.execute(invocation(Command::Restore)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::NoRestoreRect {
+                window_id: WindowId(42)
+            }
+        );
+        assert_eq!(executor.platform().set_calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn restore_rejects_reused_identity_when_the_frame_does_not_match() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+        executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window =
+            Ok(Some(window(Rect::new(250.0, 100.0, 300.0, 200.0))));
+
+        let error = executor.execute(invocation(Command::Restore)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::StaleWindowHistory {
+                window_id: WindowId(42)
+            }
+        );
+        assert_eq!(executor.history().restore_rect(WindowId(42)), None);
+        assert_eq!(executor.history().last_command(WindowId(42)), None);
+        assert_eq!(executor.platform().set_calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn display_geometry_changes_invalidate_restore_history() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+        let moved = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(moved.applied_rect)));
+        executor.platform_mut().screens = Ok(vec![screen_with_frame(
+            1,
+            Rect::new(0.0, 0.0, 1200.0, 900.0),
+        )]);
+
+        let error = executor.execute(invocation(Command::Restore)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::NoRestoreRect {
+                window_id: WindowId(42)
+            }
+        );
+        assert_eq!(executor.platform().set_calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn restore_rect_is_fitted_inside_the_current_work_area() {
+        let original = Rect::new(-100.0, -50.0, 300.0, 200.0);
+        let platform = FakePlatform {
+            front_window: Ok(Some(window(original))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+        let moved = executor.execute(invocation(Command::Maximize)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(moved.applied_rect)));
+
+        let restored = executor.execute(invocation(Command::Restore)).unwrap();
+
+        assert_eq!(restored.requested_rect, Rect::new(0.0, 0.0, 300.0, 200.0));
+    }
+
+    #[test]
+    fn repeated_resize_uses_logical_rect_instead_of_native_rounding() {
+        let logical = Rect::new(84.5, 84.5, 231.0, 131.0);
+        let applied = Rect::new(85.0, 85.0, 231.0, 131.0);
+        let platform = FakePlatform {
+            front_window: Ok(Some(window(applied))),
+            ..FakePlatform::new()
+        };
+        let mut executor = CommandExecutor::with_default_config(platform);
+        executor.history_mut().record_applied_command(
+            WindowId(42),
+            Command::Grow,
+            logical,
+            applied,
+        );
+
+        let execution = executor.execute(invocation(Command::Grow)).unwrap();
+
+        assert_eq!(
+            execution.requested_rect,
+            Rect::new(69.5, 69.5, 261.0, 161.0)
+        );
+    }
+
+    #[test]
+    fn screen_enumeration_order_does_not_invalidate_history() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+        let moved = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(moved.applied_rect)));
+        executor.platform_mut().screens = Ok(vec![screen(2, 1000.0), screen(1, 0.0)]);
+
+        let restored = executor.execute(invocation(Command::Restore)).unwrap();
+
+        assert_eq!(
+            restored.requested_rect,
+            Rect::new(100.0, 100.0, 200.0, 100.0)
+        );
+    }
+
     fn invocation(command: Command) -> CommandInvocation {
         CommandInvocation {
             command,
@@ -984,6 +1339,7 @@ mod tests {
             is_resizable: true,
             is_minimized: false,
             is_hidden: false,
+            is_fullscreen: false,
         }
     }
 }

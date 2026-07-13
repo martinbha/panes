@@ -22,6 +22,7 @@ pub struct WindowInfo {
     pub is_resizable: bool,
     pub is_minimized: bool,
     pub is_hidden: bool,
+    pub is_fullscreen: bool,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
