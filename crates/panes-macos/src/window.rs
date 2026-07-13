@@ -345,12 +345,25 @@ fn focused_or_first_window(application: &AXUIElement) -> PlatformResult<Option<A
         Ok(window) if is_window(&window)? => return Ok(Some(window)),
         // Some Chromium PWAs and system windows do not expose a focused AX
         // window reliably. Their application window list is still usable.
-        Ok(_) | Err(_) => {}
+        Ok(_) => {}
+        Err(error) if optional_accessibility_error(&error) => {}
+        Err(error) => {
+            return Err(map_accessibility_error(
+                "failed to read focused macOS window",
+                error,
+            ));
+        }
     }
 
     let windows = match application.attribute(&AXAttribute::windows()) {
         Ok(windows) => windows,
-        Err(_) => return Ok(None),
+        Err(error) if optional_accessibility_error(&error) => return Ok(None),
+        Err(error) => {
+            return Err(map_accessibility_error(
+                "failed to read macOS application windows",
+                error,
+            ));
+        }
     };
 
     for window in &windows {
