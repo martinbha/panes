@@ -19,11 +19,7 @@ fn main() {
         loaded.config.hotkey_bindings,
         move |invocation, repeats| {
             if let Err(error) = executor.execute_repeated(invocation, repeats) {
-                eprintln!(
-                    "failed to execute {} command from {:?}: {error}",
-                    invocation.command.label(),
-                    invocation.source
-                );
+                report_command_failure(invocation, &error);
             }
         },
     );
@@ -48,11 +44,7 @@ fn main() {
         loaded.config.hotkey_bindings,
         move |invocation, repeats| {
             if let Err(error) = executor.execute_repeated(invocation, repeats) {
-                eprintln!(
-                    "failed to execute {} command from {:?}: {error}",
-                    invocation.command.label(),
-                    invocation.source
-                );
+                report_command_failure(invocation, &error);
             }
         },
     );
@@ -77,6 +69,27 @@ fn report_config_problems(loaded: &panes_runtime::config::ConfigLoad) {
 
     for issue in &loaded.issues {
         eprintln!("panes config warning: {issue}");
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn report_command_failure(
+    invocation: panes_platform::CommandInvocation,
+    error: &panes_runtime::CommandExecutionError,
+) {
+    use panes_runtime::CommandFailureLevel;
+
+    let level = error.failure_level();
+    if cfg!(debug_assertions) || level == CommandFailureLevel::Error {
+        eprintln!(
+            "event=command_failure level={} command={} source={:?} error={error:?}",
+            match level {
+                CommandFailureLevel::Debug => "debug",
+                CommandFailureLevel::Error => "error",
+            },
+            invocation.command.id(),
+            invocation.source,
+        );
     }
 }
 

@@ -36,6 +36,20 @@ Invalid individual values fall back to their defaults with a warning on
 stderr; an unparseable file falls back to full defaults with an error naming
 the file and problem.
 
+## Window-management failures
+
+Transient desktop states—no focused window, no saved restore rectangle, or an
+unsupported/vanished window—are ignored in release builds and emitted as
+structured `event=command_failure` diagnostics in development builds.
+Permission, native API, and display-geometry failures are also logged in
+release builds. Command failures do not show tray notifications because common
+focus and window-state changes would make them noisy during normal use.
+
+Restore history is intentionally conservative. It is discarded when a native
+window identifier is observed with different application/window metadata or
+when the connected display geometry changes. Restore rectangles are fitted to
+the current work area so stale coordinates cannot place a window offscreen.
+
 ## Development
 
 ```bash
