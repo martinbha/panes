@@ -21,6 +21,7 @@ impl CommandExecutionError {
             Self::Platform(PlatformError::Unsupported(_) | PlatformError::NotFound(_))
             | Self::NoFocusedWindow
             | Self::NoRestoreRect { .. }
+            | Self::StaleWindowHistory { .. }
             | Self::UnsupportedWindow { .. } => CommandFailureLevel::Debug,
         }
     }

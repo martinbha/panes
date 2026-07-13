@@ -116,6 +116,16 @@ impl<P: NativePlatform> CommandExecutor<P> {
                     window_id: window.id,
                 },
             )?;
+            if !self
+                .history
+                .last_command(window.id)
+                .is_some_and(|record| rects_match(record.rect, window.rect))
+            {
+                self.history.clear_window(window.id);
+                return Err(CommandExecutionError::StaleWindowHistory {
+                    window_id: window.id,
+                });
+            }
             if let Some(restore_screen) = screen_with_largest_window_overlap(restore_rect, &screens)
             {
                 screen = restore_screen;
@@ -284,6 +294,9 @@ pub enum CommandExecutionError {
     NoRestoreRect {
         window_id: WindowId,
     },
+    StaleWindowHistory {
+        window_id: WindowId,
+    },
     UnsupportedWindow {
         window_id: WindowId,
         reason: UnsupportedWindowReason,
@@ -304,6 +317,9 @@ impl std::fmt::Display for CommandExecutionError {
             }
             Self::NoRestoreRect { window_id } => {
                 write!(formatter, "no restore rect for window {window_id:?}")
+            }
+            Self::StaleWindowHistory { window_id } => {
+                write!(formatter, "stale history for window {window_id:?}")
             }
             Self::UnsupportedWindow { window_id, reason } => {
                 write!(formatter, "unsupported window {window_id:?}: {reason:?}")
@@ -913,7 +929,8 @@ mod tests {
     fn restores_previous_rect_after_successful_command() {
         let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
 
-        executor.execute(invocation(Command::LeftHalf)).unwrap();
+        let moved = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(moved.applied_rect)));
         let restore = executor.execute(invocation(Command::Restore)).unwrap();
 
         assert_eq!(
@@ -934,8 +951,10 @@ mod tests {
     fn preserves_first_restore_rect_across_multiple_commands() {
         let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
 
-        executor.execute(invocation(Command::LeftHalf)).unwrap();
-        executor.execute(invocation(Command::Maximize)).unwrap();
+        let tiled = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(tiled.applied_rect)));
+        let maximized = executor.execute(invocation(Command::Maximize)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(window(maximized.applied_rect)));
 
         assert_eq!(
             executor.history().restore_rect(WindowId(42)),
@@ -1135,6 +1154,26 @@ mod tests {
                 window_id: WindowId(42)
             }
         );
+        assert_eq!(executor.platform().set_calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn restore_rejects_reused_identity_when_the_frame_does_not_match() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+        executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window =
+            Ok(Some(window(Rect::new(250.0, 100.0, 300.0, 200.0))));
+
+        let error = executor.execute(invocation(Command::Restore)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::StaleWindowHistory {
+                window_id: WindowId(42)
+            }
+        );
+        assert_eq!(executor.history().restore_rect(WindowId(42)), None);
+        assert_eq!(executor.history().last_command(WindowId(42)), None);
         assert_eq!(executor.platform().set_calls.borrow().len(), 1);
     }
 

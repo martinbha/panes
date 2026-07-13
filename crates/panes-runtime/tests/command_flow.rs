@@ -204,7 +204,8 @@ fn repeated_restore_runs_once_against_history() {
     let original = Rect::new(100.0, 100.0, 200.0, 100.0);
     let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
 
-    executor.execute(keyboard(Command::LeftHalf)).unwrap();
+    let tiled = executor.execute(keyboard(Command::LeftHalf)).unwrap();
+    executor.platform_mut().front_window = Some(window(tiled.applied_rect));
     let restore = executor
         .execute_repeated(keyboard(Command::Restore), 5)
         .unwrap();
@@ -217,8 +218,10 @@ fn menu_and_keyboard_invocations_share_history_for_restore() {
     let original = Rect::new(100.0, 100.0, 200.0, 100.0);
     let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
 
-    executor.execute(menu(Command::LeftHalf)).unwrap();
-    executor.execute(keyboard(Command::Maximize)).unwrap();
+    let tiled = executor.execute(menu(Command::LeftHalf)).unwrap();
+    executor.platform_mut().front_window = Some(window(tiled.applied_rect));
+    let maximized = executor.execute(keyboard(Command::Maximize)).unwrap();
+    executor.platform_mut().front_window = Some(window(maximized.applied_rect));
     let restore = executor.execute(menu(Command::Restore)).unwrap();
 
     assert_eq!(restore.requested_rect, original);
