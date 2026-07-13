@@ -392,16 +392,16 @@ fn screen_containing_point(
 }
 
 fn fit_rect_to_work_area(rect: Rect, work_area: Rect) -> Rect {
-    let width = rect.size.width.clamp(1.0, work_area.size.width.max(1.0));
-    let height = rect.size.height.clamp(1.0, work_area.size.height.max(1.0));
-    let x = rect
-        .origin
-        .x
-        .clamp(work_area.min_x(), work_area.max_x() - width);
-    let y = rect
-        .origin
-        .y
-        .clamp(work_area.min_y(), work_area.max_y() - height);
+    let width = rect.size.width.min(work_area.size.width);
+    let height = rect.size.height.min(work_area.size.height);
+    let x = rect.origin.x.clamp(
+        work_area.min_x(),
+        work_area.origin.x + (work_area.size.width - width),
+    );
+    let y = rect.origin.y.clamp(
+        work_area.min_y(),
+        work_area.origin.y + (work_area.size.height - height),
+    );
 
     Rect::new(x, y, width, height)
 }
@@ -718,6 +718,15 @@ mod tests {
         let selected = screen_with_largest_window_overlap(spanning, &screens).unwrap();
 
         assert_eq!(selected.id, ScreenId(1));
+    }
+
+    #[test]
+    fn subpixel_work_area_fitting_does_not_panic() {
+        let work_area = Rect::new(10.0, 20.0, 0.5, 0.25);
+
+        let fitted = fit_rect_to_work_area(Rect::new(100.0, 100.0, 200.0, 100.0), work_area);
+
+        assert_eq!(fitted, work_area);
     }
 
     #[test]
