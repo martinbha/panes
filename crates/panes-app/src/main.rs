@@ -81,16 +81,28 @@ fn report_command_failure(
 
     let level = error.failure_level();
     if cfg!(debug_assertions) || level == CommandFailureLevel::Error {
-        eprintln!(
-            "event=command_failure level={} command={} source={:?} error={error:?}",
-            match level {
-                CommandFailureLevel::Debug => "debug",
-                CommandFailureLevel::Error => "error",
-            },
-            invocation.command.id(),
-            invocation.source,
-        );
+        eprintln!("{}", format_command_failure(invocation, error, level));
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn format_command_failure(
+    invocation: panes_platform::CommandInvocation,
+    error: &panes_runtime::CommandExecutionError,
+    level: panes_runtime::CommandFailureLevel,
+) -> String {
+    use panes_runtime::CommandFailureLevel;
+
+    format!(
+        "event=command_failure level={} command={} source={:?} error={error:?}",
+        match level {
+            CommandFailureLevel::Debug => "debug",
+            CommandFailureLevel::Error => "error",
+        },
+        invocation.command.id(),
+        invocation.source,
+        error = error.to_string(),
+    )
 }
 
 fn print_runtime_summary(platform_name: &str) {
@@ -101,4 +113,32 @@ fn print_runtime_summary(platform_name: &str) {
         menu_entries.len(),
         hotkey_bindings.len()
     );
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+mod tests {
+    use panes_core::Command;
+    use panes_platform::{CommandInvocation, CommandSource};
+    use panes_runtime::{CommandExecutionError, CommandFailureLevel};
+
+    use super::format_command_failure;
+
+    #[test]
+    fn command_failure_is_one_parseable_record() {
+        let invocation = CommandInvocation {
+            command: Command::Maximize,
+            source: CommandSource::Keyboard,
+        };
+
+        let record = format_command_failure(
+            invocation,
+            &CommandExecutionError::NoFocusedWindow,
+            CommandFailureLevel::Debug,
+        );
+
+        assert_eq!(
+            record,
+            "event=command_failure level=debug command=maximize source=Keyboard error=\"no focused window\""
+        );
+    }
 }
