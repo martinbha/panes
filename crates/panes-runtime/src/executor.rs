@@ -373,7 +373,11 @@ fn screen_with_largest_window_overlap(
                 .intersection(screen.frame)
                 .map(|intersection| (screen, intersection.area()))
         })
-        .max_by(|(_, left_area), (_, right_area)| left_area.total_cmp(right_area))
+        .min_by(|(left_screen, left_area), (right_screen, right_area)| {
+            right_area
+                .total_cmp(left_area)
+                .then_with(|| left_screen.id.0.cmp(&right_screen.id.0))
+        })
         .map(|(screen, _)| screen)
 }
 
@@ -694,6 +698,16 @@ mod tests {
             execution.requested_rect,
             Rect::new(1000.0, 0.0, 1000.0, 800.0)
         );
+    }
+
+    #[test]
+    fn equal_screen_overlap_uses_stable_id_tiebreaker() {
+        let screens = vec![screen(2, 1000.0), screen(1, 0.0)];
+        let spanning = Rect::new(750.0, 100.0, 500.0, 200.0);
+
+        let selected = screen_with_largest_window_overlap(spanning, &screens).unwrap();
+
+        assert_eq!(selected.id, ScreenId(1));
     }
 
     #[test]
