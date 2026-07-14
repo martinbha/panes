@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use panes_platform::{default_hotkey_bindings, default_menu_entries};
 
 #[cfg(target_os = "macos")]

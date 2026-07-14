@@ -235,21 +235,20 @@ fn apply_window_frame(
         applied = native_window_rect(window)?;
     }
 
-    if native_rects_match(applied, current)
-        && !native_rects_match(requested, current)
-        && let Some(error) = first_error
-    {
-        return Err(error);
+    if native_rects_match(applied, current) && !native_rects_match(requested, current) {
+        if let Some(error) = first_error {
+            return Err(error);
+        }
     }
 
     Ok(space.native_rect_to_panes(applied))
 }
 
 fn remember_first_error(first_error: &mut Option<PlatformError>, result: PlatformResult<()>) {
-    if let Err(error) = result
-        && first_error.is_none()
-    {
-        *first_error = Some(error);
+    if first_error.is_none() {
+        if let Err(error) = result {
+            *first_error = Some(error);
+        }
     }
 }
 
