@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+panes-core = { path = "../panes-core" }
+panes-platform = { path = "../panes-platform" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
 accessibility = "0.2.0"
 accessibility-sys = "0.2.0"
 core-foundation = "0.10.1"
@@ -29,8 +33,6 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSString",
     "objc2-core-foundation",
 ] }
-panes-core = { path = "../panes-core" }
-panes-platform = { path = "../panes-platform" }
 tao = { version = "0.35.3", default-features = false }
 tray-icon = { version = "0.24.1", default-features = false }
 
