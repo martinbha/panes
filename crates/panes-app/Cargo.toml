@@ -22,5 +22,14 @@ panes-macos = { path = "../panes-macos" }
 [target.'cfg(target_os = "windows")'.dependencies]
 panes-windows = { path = "../panes-windows" }
 
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1.31"
+
+[package.metadata.winresource]
+FileDescription = "Panes window manager"
+InternalName = "panes"
+OriginalFilename = "panes.exe"
+ProductName = "Panes"
+
 [lints]
 workspace = true
