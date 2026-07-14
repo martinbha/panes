@@ -94,7 +94,7 @@ impl fmt::Display for ConfigIssue {
             } => {
                 write!(
                     formatter,
-                    "hotkeys: invalid accelerator {accelerator:?} for {id:?}: {message}; using the default binding"
+                    "hotkeys: invalid accelerator {accelerator:?} for {id:?}: {message}; ignoring the override"
                 )
             }
             Self::DuplicateAccelerator {
@@ -601,6 +601,7 @@ mod tests {
             issues.as_slice(),
             [ConfigIssue::InvalidAccelerator { id, .. }] if id == "center-half"
         ));
+        assert!(issues[0].to_string().contains("ignoring the override"));
         assert_eq!(accelerator_for(&config, Command::CenterHalf), None);
         assert_eq!(menu_accelerator_for(&config, Command::CenterHalf), None);
     }
