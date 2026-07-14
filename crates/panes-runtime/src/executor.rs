@@ -88,13 +88,6 @@ impl<P: NativePlatform> CommandExecutor<P> {
         invocation: CommandInvocation,
         repeats: usize,
     ) -> CommandExecutionResult<CommandExecution> {
-        let window = self
-            .platform
-            .front_window()
-            .map_err(CommandExecutionError::Platform)?
-            .ok_or(CommandExecutionError::NoFocusedWindow)?;
-        validate_window(&window)?;
-
         let screens = self
             .platform
             .screens()
@@ -111,6 +104,13 @@ impl<P: NativePlatform> CommandExecutor<P> {
                 screen_id: screen.id,
             });
         }
+
+        let window = self
+            .platform
+            .front_window()
+            .map_err(CommandExecutionError::Platform)?
+            .ok_or(CommandExecutionError::NoFocusedWindow)?;
+        validate_window(&window)?;
 
         self.refresh_history_context(&window, &screens);
 

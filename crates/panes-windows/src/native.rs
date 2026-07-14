@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt::Display,
     mem::size_of,
@@ -56,6 +57,7 @@ const QUIT_MENU_ID: &str = "panes.quit";
 pub struct WindowsPlatform {
     tray: Option<TrayState>,
     hotkeys: Option<RegisteredHotkeys>,
+    coordinate_space: RefCell<Option<CoordinateSpace>>,
 }
 
 impl WindowsPlatform {
@@ -65,6 +67,7 @@ impl WindowsPlatform {
         Self {
             tray: None,
             hotkeys: None,
+            coordinate_space: RefCell::new(None),
         }
     }
 
@@ -105,7 +108,7 @@ impl NativePlatform for WindowsPlatform {
     }
 
     fn cursor_position(&self) -> PlatformResult<Point> {
-        let space = coordinate_space()?;
+        let space = self.coordinate_space()?;
         let mut point = POINT::default();
         // SAFETY: `point` points to initialized writable storage for the documented Win32 call.
         unsafe { GetCursorPos(&mut point) }
@@ -117,6 +120,7 @@ impl NativePlatform for WindowsPlatform {
     fn screens(&self) -> PlatformResult<Vec<ScreenInfo>> {
         let screens = native_screens()?;
         let space = coordinate_space_for(&screens)?;
+        self.coordinate_space.replace(Some(space));
 
         Ok(screens
             .into_iter()
@@ -131,61 +135,65 @@ impl NativePlatform for WindowsPlatform {
             return Ok(None);
         }
 
-        window_info(window, coordinate_space()?).map(Some)
+        window_info(window, self.coordinate_space()?).map(Some)
     }
 
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> PlatformResult<Rect> {
-        let space = coordinate_space()?;
-        let window = window_from_id(window_id)?;
-        // SAFETY: `window` was reconstructed from an opaque HWND and is checked before use.
-        if !unsafe { IsWindow(Some(window)).as_bool() } {
-            return Err(PlatformError::NotFound("Windows window no longer exists"));
-        }
-        if is_shell_or_tool_window(window) {
-            return Err(PlatformError::Unsupported(
-                "Windows desktop, shell, child, and tool windows cannot be moved",
-            ));
-        }
-        if !unsafe { IsWindowVisible(window).as_bool() } {
-            return Err(PlatformError::Unsupported(
-                "hidden Windows windows cannot be moved",
-            ));
-        }
-        if unsafe { IsIconic(window).as_bool() } {
-            return Err(PlatformError::Unsupported(
-                "minimized Windows windows cannot be moved",
-            ));
-        }
-        if window_style(window) & WS_THICKFRAME != WS_THICKFRAME {
-            return Err(PlatformError::Unsupported(
-                "non-resizable Windows windows cannot be moved",
-            ));
-        }
+        let space = self.coordinate_space()?;
+        let result = (|| {
+            let window = window_from_id(window_id)?;
+            // SAFETY: `window` was reconstructed from an opaque HWND and is checked before use.
+            if !unsafe { IsWindow(Some(window)).as_bool() } {
+                return Err(PlatformError::NotFound("Windows window no longer exists"));
+            }
+            if is_shell_or_tool_window(window) {
+                return Err(PlatformError::Unsupported(
+                    "Windows desktop, shell, child, and tool windows cannot be moved",
+                ));
+            }
+            if !unsafe { IsWindowVisible(window).as_bool() } {
+                return Err(PlatformError::Unsupported(
+                    "hidden Windows windows cannot be moved",
+                ));
+            }
+            if unsafe { IsIconic(window).as_bool() } {
+                return Err(PlatformError::Unsupported(
+                    "minimized Windows windows cannot be moved",
+                ));
+            }
+            if window_style(window) & WS_THICKFRAME != WS_THICKFRAME {
+                return Err(PlatformError::Unsupported(
+                    "non-resizable Windows windows cannot be moved",
+                ));
+            }
 
-        let (x, y, width, height) = native_rect(space.panes_rect_to_native(rect))?;
-        // A maximized window ignores ordinary sizing. Restore it first so the requested frame
-        // becomes the normal placement rect instead of an invisible restore target.
-        // SAFETY: `window` was validated immediately above.
-        if unsafe { IsZoomed(window).as_bool() } {
-            // ShowWindow's return value reports the prior visibility state, not success.
-            let _ = unsafe { ShowWindow(window, SW_RESTORE) };
-        }
+            let (x, y, width, height) = native_rect(space.panes_rect_to_native(rect))?;
+            // A maximized window ignores ordinary sizing. Restore it first so the requested frame
+            // becomes the normal placement rect instead of an invisible restore target.
+            // SAFETY: `window` was validated immediately above.
+            if unsafe { IsZoomed(window).as_bool() } {
+                // ShowWindow's return value reports the prior visibility state, not success.
+                let _ = unsafe { ShowWindow(window, SW_RESTORE) };
+            }
 
-        // SAFETY: `window` is valid and the integer coordinates were range checked above.
-        unsafe {
-            SetWindowPos(
-                window,
-                None,
-                x,
-                y,
-                width,
-                height,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
-            )
-        }
-        .map_err(|error| native_error("failed to move or resize Windows window", error))?;
+            // SAFETY: `window` is valid and the integer coordinates were range checked above.
+            unsafe {
+                SetWindowPos(
+                    window,
+                    None,
+                    x,
+                    y,
+                    width,
+                    height,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
+                )
+            }
+            .map_err(|error| native_error("failed to move or resize Windows window", error))?;
 
-        window_rect(window, space)
+            window_rect(window, space)
+        })();
+        self.coordinate_space.take();
+        result
     }
 
     fn register_hotkeys(&mut self, bindings: &[HotkeyBinding]) -> PlatformResult<()> {
@@ -237,6 +245,18 @@ impl NativePlatform for WindowsPlatform {
             command_by_menu_id,
         });
         Ok(())
+    }
+}
+
+impl WindowsPlatform {
+    fn coordinate_space(&self) -> PlatformResult<CoordinateSpace> {
+        if let Some(space) = *self.coordinate_space.borrow() {
+            return Ok(space);
+        }
+
+        let space = coordinate_space()?;
+        self.coordinate_space.replace(Some(space));
+        Ok(space)
     }
 }
 

@@ -1,6 +1,7 @@
 #![cfg(target_os = "macos")]
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt::Display,
     sync::{Arc, Mutex},
@@ -46,6 +47,7 @@ pub struct MacOsPlatform {
     tray: Option<TrayState>,
     hotkeys: Option<RegisteredHotkeys>,
     windows: window::WindowCache,
+    desktop: RefCell<Option<screen::DesktopSnapshot>>,
 }
 
 impl MacOsPlatform {
@@ -55,6 +57,7 @@ impl MacOsPlatform {
             tray: None,
             hotkeys: None,
             windows: window::WindowCache::default(),
+            desktop: RefCell::new(None),
         }
     }
 
@@ -104,19 +107,33 @@ impl NativePlatform for MacOsPlatform {
     }
 
     fn cursor_position(&self) -> PlatformResult<Point> {
-        screen::cursor_position()
+        let snapshot = self.desktop_snapshot()?;
+        screen::cursor_position_in(snapshot.coordinate_space)
     }
 
     fn screens(&self) -> PlatformResult<Vec<ScreenInfo>> {
-        screen::screens()
+        let snapshot = screen::desktop_snapshot()?;
+        let screens = snapshot.screens.clone();
+        self.desktop.replace(Some(snapshot));
+        Ok(screens)
     }
 
     fn front_window(&self) -> PlatformResult<Option<WindowInfo>> {
-        window::front_window(&self.windows)
+        let snapshot = self.desktop_snapshot()?;
+        window::front_window_in(&self.windows, snapshot.coordinate_space)
     }
 
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> PlatformResult<Rect> {
-        window::set_window_rect(&self.windows, window_id, rect)
+        let snapshot = self.desktop_snapshot()?;
+        let result = window::set_window_rect_in(
+            &self.windows,
+            window_id,
+            rect,
+            snapshot.coordinate_space,
+            &snapshot.screens,
+        );
+        self.desktop.take();
+        result
     }
 
     fn forget_window(&self, window_id: WindowId) {
@@ -176,6 +193,18 @@ impl NativePlatform for MacOsPlatform {
             accessibility_item,
         });
         Ok(())
+    }
+}
+
+impl MacOsPlatform {
+    fn desktop_snapshot(&self) -> PlatformResult<screen::DesktopSnapshot> {
+        if let Some(snapshot) = self.desktop.borrow().clone() {
+            return Ok(snapshot);
+        }
+
+        let snapshot = screen::desktop_snapshot()?;
+        self.desktop.replace(Some(snapshot.clone()));
+        Ok(snapshot)
     }
 }
 

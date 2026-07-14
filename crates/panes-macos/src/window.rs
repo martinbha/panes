@@ -22,7 +22,7 @@ use objc2_app_kit::NSRunningApplication;
 use panes_core::{MAX_TRACKED_WINDOWS, Rect, WindowId};
 use panes_platform::{PlatformError, PlatformResult, WindowInfo};
 
-use crate::{accessibility_authorization, coordinates::CoordinateSpace, screen};
+use crate::{accessibility_authorization, coordinates::CoordinateSpace};
 
 const AX_ENHANCED_USER_INTERFACE_ATTRIBUTE: &str = "AXEnhancedUserInterface";
 const AX_FULL_SCREEN_ATTRIBUTE: &str = "AXFullScreen";
@@ -93,7 +93,10 @@ fn remove_recent_window(recent_windows: &mut VecDeque<WindowId>, id: WindowId) {
     }
 }
 
-pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowInfo>> {
+pub(crate) fn front_window_in(
+    cache: &WindowCache,
+    space: CoordinateSpace,
+) -> PlatformResult<Option<WindowInfo>> {
     ensure_accessibility_permission()?;
 
     // AXFocusedWindow only exists on application elements, so resolve the
@@ -113,7 +116,6 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
         return Ok(None);
     }
 
-    let space = screen::coordinate_space()?;
     let info = window_info(&window, space, cache.known_id(&window))?;
     cache.remember(info.id, window);
 
@@ -123,20 +125,21 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
 /// Callers reject hidden or minimized windows using the `WindowInfo` returned
 /// by `front_window`. Frame writes are intentionally best-effort: macOS apps
 /// vary in whether they support changing size, position, or both.
-pub(crate) fn set_window_rect(
+pub(crate) fn set_window_rect_in(
     cache: &WindowCache,
     window_id: WindowId,
     rect: Rect,
+    space: CoordinateSpace,
+    screens: &[panes_platform::ScreenInfo],
 ) -> PlatformResult<Rect> {
     ensure_accessibility_permission()?;
     let window = cache.get(window_id).ok_or(PlatformError::NotFound(
         "macOS window is not cached; read the front window before moving it",
     ))?;
 
-    let space = screen::coordinate_space()?;
     let requested_native_rect = space.panes_rect_to_native(rect);
     let current_native_rect = native_window_rect(&window)?;
-    let destination_work_area = destination_work_area(space, requested_native_rect);
+    let destination_work_area = destination_work_area(space, requested_native_rect, screens);
 
     // Chromium-based apps can enable this application-level accessibility
     // mode, which prevents ordinary window frame updates. Disable it around
@@ -250,23 +253,23 @@ fn remember_first_error(first_error: &mut Option<PlatformError>, result: Platfor
     }
 }
 
-fn destination_work_area(space: CoordinateSpace, requested_native_rect: Rect) -> Rect {
+fn destination_work_area(
+    space: CoordinateSpace,
+    requested_native_rect: Rect,
+    screens: &[panes_platform::ScreenInfo],
+) -> Rect {
     let requested_panes_rect = space.native_rect_to_panes(requested_native_rect);
 
-    screen::screens()
-        .ok()
-        .and_then(|screens| {
-            screens
-                .into_iter()
-                .filter_map(|screen| {
-                    screen
-                        .work_area
-                        .intersection(requested_panes_rect)
-                        .map(|overlap| (screen.work_area, overlap.area()))
-                })
-                .max_by(|(_, left_area), (_, right_area)| left_area.total_cmp(right_area))
-                .map(|(work_area, _)| space.panes_rect_to_native(work_area))
+    screens
+        .iter()
+        .filter_map(|screen| {
+            screen
+                .work_area
+                .intersection(requested_panes_rect)
+                .map(|overlap| (screen.work_area, overlap.area()))
         })
+        .max_by(|(_, left_area), (_, right_area)| left_area.total_cmp(right_area))
+        .map(|(work_area, _)| space.panes_rect_to_native(work_area))
         .unwrap_or(requested_native_rect)
 }
 
