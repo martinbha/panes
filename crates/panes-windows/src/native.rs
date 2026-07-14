@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fmt::Display,
     mem::size_of,
     sync::{Arc, Mutex, Once},
@@ -11,8 +11,8 @@ use global_hotkey::{
 };
 use panes_core::{Command, CommandCategory, Point, Rect, WindowId};
 use panes_platform::{
-    CommandInvocation, CommandSource, HotkeyBinding, MenuEntry, NativePlatform, PlatformError,
-    PlatformResult, ScreenId, ScreenInfo, WindowInfo,
+    CommandInvocation, CommandSource, HotkeyBinding, MenuEntry, NativePlatform, PendingHotkeys,
+    PlatformError, PlatformResult, ScreenId, ScreenInfo, WindowInfo,
 };
 use tao::{
     event::{Event, StartCause},
@@ -258,16 +258,18 @@ where
     }));
 
     let proxy = event_loop.create_proxy();
-    let pending_hotkeys: Arc<Mutex<VecDeque<u32>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let pending_hotkeys = Arc::new(Mutex::new(PendingHotkeys::default()));
     let hotkey_queue = Arc::clone(&pending_hotkeys);
     GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
         if event.state() != HotKeyState::Pressed {
             return;
         }
-        if let Ok(mut queue) = hotkey_queue.lock() {
-            queue.push_back(event.id());
+        let should_wake = hotkey_queue
+            .lock()
+            .is_ok_and(|mut queue| queue.enqueue(event.id()));
+        if should_wake {
+            let _ = proxy.send_event(UserEvent::HotkeysReady);
         }
-        let _ = proxy.send_event(UserEvent::HotkeysReady);
     }));
 
     let mut platform = WindowsPlatform::new();
@@ -295,16 +297,14 @@ where
                 }
             }
             Event::UserEvent(UserEvent::HotkeysReady) => {
-                let ids: Vec<u32> = pending_hotkeys
+                let runs = pending_hotkeys
                     .lock()
-                    .map(|mut queue| queue.drain(..).collect())
+                    .map(|mut queue| queue.drain())
                     .unwrap_or_default();
-                let invocations = ids
-                    .into_iter()
-                    .filter_map(|id| platform.invocation_for_hotkey_id(id));
-
-                for (invocation, repeats) in coalesce_invocations(invocations) {
-                    handle_command(invocation, repeats);
+                for (id, repeats) in runs {
+                    if let Some(invocation) = platform.invocation_for_hotkey_id(id) {
+                        handle_command(invocation, repeats);
+                    }
                 }
             }
             _ => {}
@@ -328,21 +328,6 @@ struct RegisteredHotkeys {
 enum UserEvent {
     Menu(MenuEvent),
     HotkeysReady,
-}
-
-fn coalesce_invocations(
-    invocations: impl IntoIterator<Item = CommandInvocation>,
-) -> Vec<(CommandInvocation, usize)> {
-    let mut runs: Vec<(CommandInvocation, usize)> = Vec::new();
-
-    for invocation in invocations {
-        match runs.last_mut() {
-            Some((last, repeats)) if *last == invocation => *repeats += 1,
-            _ => runs.push((invocation, 1)),
-        }
-    }
-
-    runs
 }
 
 fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<String, Command>)> {

@@ -1,7 +1,7 @@
 #![cfg(target_os = "macos")]
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fmt::Display,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -21,8 +21,9 @@ use objc2_app_kit::{NSAlert, NSApplication};
 use objc2_foundation::NSString;
 use panes_core::{Command, CommandCategory, Point, Rect, WindowId};
 use panes_platform::{
-    CommandInvocation, CommandSource, HotkeyBinding, MenuEntry, NativePlatform, PlatformError,
-    PlatformResult, ScreenInfo, WindowInfo, default_hotkey_bindings, default_menu_entries,
+    CommandInvocation, CommandSource, HotkeyBinding, MenuEntry, NativePlatform, PendingHotkeys,
+    PlatformError, PlatformResult, ScreenInfo, WindowInfo, default_hotkey_bindings,
+    default_menu_entries,
 };
 use tao::{
     event::{Event, StartCause},
@@ -216,16 +217,18 @@ where
     }));
 
     let proxy = event_loop.create_proxy();
-    let pending_hotkeys: Arc<Mutex<VecDeque<u32>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let pending_hotkeys = Arc::new(Mutex::new(PendingHotkeys::default()));
     let hotkey_queue = Arc::clone(&pending_hotkeys);
     GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
         if event.state() != HotKeyState::Pressed {
             return;
         }
-        if let Ok(mut queue) = hotkey_queue.lock() {
-            queue.push_back(event.id());
+        let should_wake = hotkey_queue
+            .lock()
+            .is_ok_and(|mut queue| queue.enqueue(event.id()));
+        if should_wake {
+            let _ = proxy.send_event(UserEvent::HotkeysReady);
         }
-        let _ = proxy.send_event(UserEvent::HotkeysReady);
     }));
 
     let mut platform = MacOsPlatform::new();
@@ -301,18 +304,14 @@ where
                 }
             }
             Event::UserEvent(UserEvent::HotkeysReady) => {
-                // One wake-up per press is sent, but the first one drains the
-                // whole queue, so later wake-ups usually find it empty.
-                let ids: Vec<u32> = pending_hotkeys
+                let runs = pending_hotkeys
                     .lock()
-                    .map(|mut queue| queue.drain(..).collect())
+                    .map(|mut queue| queue.drain())
                     .unwrap_or_default();
-                let invocations = ids
-                    .into_iter()
-                    .filter_map(|id| platform.invocation_for_hotkey_id(id));
-
-                for (invocation, repeats) in coalesce_invocations(invocations) {
-                    handle_command(invocation, repeats);
+                for (id, repeats) in runs {
+                    if let Some(invocation) = platform.invocation_for_hotkey_id(id) {
+                        handle_command(invocation, repeats);
+                    }
                 }
             }
             _ => {}
@@ -337,25 +336,6 @@ struct RegisteredHotkeys {
 enum UserEvent {
     Menu(MenuEvent),
     HotkeysReady,
-}
-
-/// Collapses consecutive identical invocations into `(invocation, repeats)`
-/// runs so a burst of queued presses of the same hotkey becomes one handler
-/// call — and therefore one native frame change — instead of replaying every
-/// press individually.
-fn coalesce_invocations(
-    invocations: impl IntoIterator<Item = CommandInvocation>,
-) -> Vec<(CommandInvocation, usize)> {
-    let mut runs: Vec<(CommandInvocation, usize)> = Vec::new();
-
-    for invocation in invocations {
-        match runs.last_mut() {
-            Some((last, repeats)) if *last == invocation => *repeats += 1,
-            _ => runs.push((invocation, 1)),
-        }
-    }
-
-    runs
 }
 
 fn build_tray_menu(
@@ -602,26 +582,6 @@ fn native_error(context: impl Display, error: impl Display) -> PlatformError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn coalesce_collapses_only_consecutive_identical_invocations() {
-        let grow = CommandInvocation {
-            command: Command::Grow,
-            source: CommandSource::Keyboard,
-        };
-        let shrink = CommandInvocation {
-            command: Command::Shrink,
-            source: CommandSource::Keyboard,
-        };
-
-        assert_eq!(coalesce_invocations([]), Vec::new());
-        assert_eq!(coalesce_invocations([grow]), vec![(grow, 1)]);
-        assert_eq!(coalesce_invocations([grow, grow, grow]), vec![(grow, 3)]);
-        assert_eq!(
-            coalesce_invocations([grow, grow, shrink, grow]),
-            vec![(grow, 2), (shrink, 1), (grow, 1)]
-        );
-    }
 
     #[test]
     fn default_hotkey_bindings_all_parse() {
