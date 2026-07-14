@@ -118,6 +118,10 @@ impl NativePlatform for MacOsPlatform {
         window::set_window_rect(&self.windows, window_id, rect)
     }
 
+    fn forget_window(&self, window_id: WindowId) {
+        self.windows.forget(window_id);
+    }
+
     fn register_hotkeys(&mut self, bindings: &[HotkeyBinding]) -> PlatformResult<()> {
         let manager = GlobalHotKeyManager::new()
             .map_err(|error| native_error("failed to create macOS hotkey manager", error))?;

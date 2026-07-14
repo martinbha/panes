@@ -71,6 +71,9 @@ pub trait NativePlatform {
 
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> PlatformResult<Rect>;
 
+    /// Releases any native state retained for a window that no longer needs history.
+    fn forget_window(&self, _window_id: WindowId) {}
+
     fn register_hotkeys(&mut self, bindings: &[HotkeyBinding]) -> PlatformResult<()>;
 
     fn show_tray_menu(&mut self, entries: &[MenuEntry]) -> PlatformResult<()>;

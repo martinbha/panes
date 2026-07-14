@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::HashMap, ffi::c_void};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    ffi::c_void,
+};
 
 use accessibility::{AXAttribute, AXUIElement, Error as AccessibilityError};
 use accessibility_sys::{
@@ -15,7 +19,7 @@ use core_foundation::{
 };
 use core_graphics::geometry::{CGPoint, CGSize};
 use objc2_app_kit::NSRunningApplication;
-use panes_core::{Rect, WindowId};
+use panes_core::{MAX_TRACKED_WINDOWS, Rect, WindowId};
 use panes_platform::{PlatformError, PlatformResult, WindowInfo};
 
 use crate::{accessibility_authorization, coordinates::CoordinateSpace, screen};
@@ -25,26 +29,67 @@ const AX_FULL_SCREEN_ATTRIBUTE: &str = "AXFullScreen";
 
 #[derive(Default)]
 pub(crate) struct WindowCache {
-    windows: RefCell<HashMap<WindowId, AXUIElement>>,
+    state: RefCell<WindowCacheState>,
+}
+
+#[derive(Default)]
+struct WindowCacheState {
+    windows: HashMap<WindowId, AXUIElement>,
+    recent_windows: VecDeque<WindowId>,
 }
 
 impl WindowCache {
     pub(crate) fn remember(&self, id: WindowId, window: AXUIElement) {
-        self.windows.borrow_mut().insert(id, window);
+        let mut state = self.state.borrow_mut();
+        state.windows.insert(id, window);
+        touch_cached_window(&mut state, id);
     }
 
     pub(crate) fn get(&self, id: WindowId) -> Option<AXUIElement> {
-        self.windows.borrow().get(&id).cloned()
+        let mut state = self.state.borrow_mut();
+        let window = state.windows.get(&id).cloned();
+        if window.is_some() {
+            touch_cached_window(&mut state, id);
+        }
+        window
+    }
+
+    pub(crate) fn forget(&self, id: WindowId) {
+        let mut state = self.state.borrow_mut();
+        state.windows.remove(&id);
+        remove_recent_window(&mut state.recent_windows, id);
     }
 
     /// AXUIElements that refer to the same window compare CFEqual, so a hit
     /// here preserves the window identity across successive accessibility
     /// reads.
     pub(crate) fn known_id(&self, window: &AXUIElement) -> Option<WindowId> {
-        self.windows
-            .borrow()
+        let mut state = self.state.borrow_mut();
+        let id = state
+            .windows
             .iter()
-            .find_map(|(id, cached)| (cached == window).then_some(*id))
+            .find_map(|(id, cached)| (cached == window).then_some(*id));
+        if let Some(id) = id {
+            touch_cached_window(&mut state, id);
+        }
+        id
+    }
+}
+
+fn touch_cached_window(state: &mut WindowCacheState, id: WindowId) {
+    remove_recent_window(&mut state.recent_windows, id);
+    state.recent_windows.push_back(id);
+
+    while state.recent_windows.len() > MAX_TRACKED_WINDOWS {
+        if let Some(evicted) = state.recent_windows.pop_front() {
+            state.windows.remove(&evicted);
+        }
+    }
+}
+
+fn remove_recent_window(recent_windows: &mut VecDeque<WindowId>, id: WindowId) {
+    if let Some(index) = recent_windows.iter().position(|candidate| *candidate == id) {
+        recent_windows.remove(index);
     }
 }
 
