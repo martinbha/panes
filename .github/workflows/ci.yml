@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  platform:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS 15 arm64
+            os: macos-15
+          - name: Windows 2025 x86_64
+            os: windows-2025
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup set profile minimal
+          rustup show active-toolchain
+          rustc --version --verbose
+
+      - name: Restore Cargo cache
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --workspace --all-targets
+
+      - name: Package macOS app
+        if: runner.os == 'macOS'
+        run: scripts/package-macos.sh
+
+      - name: Package Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/package-windows.ps1
+
+      - name: Upload macOS package
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          archive: false
+          if-no-files-found: error
+          path: dist/panes-v*-macos-arm64.zip
+
+      - name: Upload Windows package
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          archive: false
+          if-no-files-found: error
+          path: dist/panes-v*-windows-x86_64.zip
