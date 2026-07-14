@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use global_hotkey::hotkey::HotKey;
 use panes_core::{Command, LayoutConfig};
 use panes_platform::{HotkeyBinding, MenuEntry, default_hotkey_bindings, default_menu_entries};
 use serde::Deserialize;
@@ -59,6 +60,11 @@ pub enum ConfigIssue {
     DisabledCommandBound {
         id: String,
     },
+    InvalidAccelerator {
+        id: String,
+        accelerator: String,
+        message: String,
+    },
     DuplicateAccelerator {
         accelerator: String,
         kept: Command,
@@ -79,6 +85,16 @@ impl fmt::Display for ConfigIssue {
                 write!(
                     formatter,
                     "hotkeys: {id:?} is bound but listed in commands.disabled; the hotkey is dropped"
+                )
+            }
+            Self::InvalidAccelerator {
+                id,
+                accelerator,
+                message,
+            } => {
+                write!(
+                    formatter,
+                    "hotkeys: invalid accelerator {accelerator:?} for {id:?}: {message}; ignoring the override"
                 )
             }
             Self::DuplicateAccelerator {
@@ -387,11 +403,20 @@ fn resolve_hotkeys(
             continue;
         }
 
+        if let Err(error) = accelerator.parse::<HotKey>() {
+            issues.push(ConfigIssue::InvalidAccelerator {
+                id: id.clone(),
+                accelerator: accelerator.clone(),
+                message: error.to_string(),
+            });
+            continue;
+        }
+
         accelerators.insert(command, accelerator.clone());
     }
 
     let mut bindings = Vec::new();
-    let mut seen: HashMap<String, Command> = HashMap::new();
+    let mut seen: HashMap<HotKey, Command> = HashMap::new();
 
     for &command in Command::ALL {
         if disabled.contains(&command) {
@@ -400,8 +425,11 @@ fn resolve_hotkeys(
         let Some(accelerator) = accelerators.get(&command) else {
             continue;
         };
+        let parsed = accelerator
+            .parse::<HotKey>()
+            .expect("default and overridden hotkeys are validated before resolution");
 
-        if let Some(&kept) = seen.get(accelerator) {
+        if let Some(&kept) = seen.get(&parsed) {
             issues.push(ConfigIssue::DuplicateAccelerator {
                 accelerator: accelerator.clone(),
                 kept,
@@ -410,7 +438,7 @@ fn resolve_hotkeys(
             continue;
         }
 
-        seen.insert(accelerator.clone(), command);
+        seen.insert(parsed, command);
         bindings.push(HotkeyBinding {
             command,
             accelerator: accelerator.clone(),
@@ -542,6 +570,43 @@ mod tests {
     }
 
     #[test]
+    fn invalid_accelerator_reports_an_issue_and_keeps_the_default() {
+        let (config, issues) = parsed("[hotkeys]\nmaximize = \"Control+NotAKey\"\n");
+
+        assert!(matches!(
+            issues.as_slice(),
+            [ConfigIssue::InvalidAccelerator {
+                id,
+                accelerator,
+                message,
+            }] if id == "maximize"
+                && accelerator == "Control+NotAKey"
+                && message.contains("NotAKey")
+        ));
+        assert_eq!(
+            accelerator_for(&config, Command::Maximize),
+            Some("Control+Alt+Enter")
+        );
+        assert_eq!(
+            menu_accelerator_for(&config, Command::Maximize),
+            Some("Control+Alt+Enter")
+        );
+    }
+
+    #[test]
+    fn invalid_accelerator_leaves_a_command_without_a_default_unbound() {
+        let (config, issues) = parsed("[hotkeys]\ncenter-half = \"Control+NotAKey\"\n");
+
+        assert!(matches!(
+            issues.as_slice(),
+            [ConfigIssue::InvalidAccelerator { id, .. }] if id == "center-half"
+        ));
+        assert!(issues[0].to_string().contains("ignoring the override"));
+        assert_eq!(accelerator_for(&config, Command::CenterHalf), None);
+        assert_eq!(menu_accelerator_for(&config, Command::CenterHalf), None);
+    }
+
+    #[test]
     fn unknown_hotkey_command_ids_are_reported_and_skipped() {
         let (config, issues) = parsed(
             "[hotkeys]\n\
@@ -641,6 +706,25 @@ mod tests {
         assert_eq!(
             accelerator_for(&config, Command::Maximize),
             Some("Control+Alt+C")
+        );
+        assert_eq!(accelerator_for(&config, Command::Center), None);
+    }
+
+    #[test]
+    fn canonical_duplicate_accelerators_keep_the_first_command() {
+        let (config, issues) = parsed("[hotkeys]\nmaximize = \"alt+control+c\"\n");
+
+        assert_eq!(
+            issues,
+            [ConfigIssue::DuplicateAccelerator {
+                accelerator: "Control+Alt+C".to_owned(),
+                kept: Command::Maximize,
+                dropped: Command::Center,
+            }]
+        );
+        assert_eq!(
+            accelerator_for(&config, Command::Maximize),
+            Some("alt+control+c")
         );
         assert_eq!(accelerator_for(&config, Command::Center), None);
     }

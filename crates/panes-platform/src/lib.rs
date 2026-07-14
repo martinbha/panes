@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use panes_core::{Command, Point, Rect, WindowId};
 
@@ -50,6 +50,72 @@ pub struct HotkeyBinding {
     pub accelerator: String,
 }
 
+/// Maximum number of key presses retained while the native event loop is busy.
+pub const MAX_PENDING_HOTKEY_PRESSES: usize = 1_024;
+
+/// Bounded, run-length encoded hotkey input shared by native event loops.
+///
+/// The first accepted press schedules a wake-up. Further presses join the
+/// pending batch without posting redundant events. Once the bound is reached,
+/// newest presses are ignored until the batch is drained.
+#[derive(Debug)]
+pub struct PendingHotkeys {
+    runs: VecDeque<(u32, usize)>,
+    pending_presses: usize,
+    max_pending_presses: usize,
+    wake_scheduled: bool,
+}
+
+impl Default for PendingHotkeys {
+    fn default() -> Self {
+        Self::with_capacity(MAX_PENDING_HOTKEY_PRESSES)
+    }
+}
+
+impl PendingHotkeys {
+    #[must_use]
+    pub fn with_capacity(max_pending_presses: usize) -> Self {
+        Self {
+            runs: VecDeque::new(),
+            pending_presses: 0,
+            max_pending_presses: max_pending_presses.max(1),
+            wake_scheduled: false,
+        }
+    }
+
+    /// Adds one press and returns whether the caller must post a wake-up.
+    pub fn enqueue(&mut self, hotkey_id: u32) -> bool {
+        if self.pending_presses >= self.max_pending_presses {
+            return false;
+        }
+
+        match self.runs.back_mut() {
+            Some((last_id, repeats)) if *last_id == hotkey_id => *repeats += 1,
+            _ => self.runs.push_back((hotkey_id, 1)),
+        }
+        self.pending_presses += 1;
+
+        if self.wake_scheduled {
+            false
+        } else {
+            self.wake_scheduled = true;
+            true
+        }
+    }
+
+    /// Drains pending runs and permits a subsequent press to schedule a wake-up.
+    pub fn drain(&mut self) -> Vec<(u32, usize)> {
+        self.pending_presses = 0;
+        self.wake_scheduled = false;
+        self.runs.drain(..).collect()
+    }
+
+    #[must_use]
+    pub const fn pending_press_count(&self) -> usize {
+        self.pending_presses
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PlatformError {
     Unsupported(&'static str),
@@ -70,6 +136,9 @@ pub trait NativePlatform {
     fn front_window(&self) -> PlatformResult<Option<WindowInfo>>;
 
     fn set_window_rect(&self, window_id: WindowId, rect: Rect) -> PlatformResult<Rect>;
+
+    /// Releases any native state retained for a window that no longer needs history.
+    fn forget_window(&self, _window_id: WindowId) {}
 
     fn register_hotkeys(&mut self, bindings: &[HotkeyBinding]) -> PlatformResult<()>;
 
@@ -193,5 +262,32 @@ mod tests {
                 binding.command.label()
             );
         }
+    }
+
+    #[test]
+    fn pending_hotkeys_schedule_one_wake_and_preserve_mixed_order() {
+        let mut pending = PendingHotkeys::default();
+
+        assert!(pending.enqueue(1));
+        assert!(!pending.enqueue(1));
+        assert!(!pending.enqueue(2));
+        assert!(!pending.enqueue(1));
+        assert_eq!(pending.pending_press_count(), 4);
+        assert_eq!(pending.drain(), [(1, 2), (2, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn pending_hotkeys_bound_input_and_reschedule_after_drain() {
+        let mut pending = PendingHotkeys::with_capacity(3);
+
+        assert!(pending.enqueue(1));
+        assert!(!pending.enqueue(1));
+        assert!(!pending.enqueue(2));
+        assert!(!pending.enqueue(3));
+        assert_eq!(pending.pending_press_count(), 3);
+        assert_eq!(pending.drain(), [(1, 2), (2, 1)]);
+
+        assert!(pending.enqueue(3));
+        assert_eq!(pending.drain(), [(3, 1)]);
     }
 }

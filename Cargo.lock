@@ -1284,6 +1284,7 @@ name = "panes-runtime"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "global-hotkey",
  "panes-core",
  "panes-platform",
  "serde",

@@ -10,8 +10,13 @@ use panes_platform::{PlatformError, PlatformResult, ScreenId, ScreenInfo};
 
 use crate::coordinates::CoordinateSpace;
 
-pub(crate) fn cursor_position() -> PlatformResult<Point> {
-    let space = coordinate_space()?;
+#[derive(Clone)]
+pub(crate) struct DesktopSnapshot {
+    pub(crate) screens: Vec<ScreenInfo>,
+    pub(crate) coordinate_space: CoordinateSpace,
+}
+
+pub(crate) fn cursor_position_in(space: CoordinateSpace) -> PlatformResult<Point> {
     let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
         .map_err(|()| PlatformError::Native("failed to create macOS event source".to_owned()))?;
     let event = CGEvent::new(source)
@@ -21,29 +26,19 @@ pub(crate) fn cursor_position() -> PlatformResult<Point> {
     Ok(space.native_point_to_panes(Point::new(location.x, location.y)))
 }
 
-pub(crate) fn screens() -> PlatformResult<Vec<ScreenInfo>> {
+pub(crate) fn desktop_snapshot() -> PlatformResult<DesktopSnapshot> {
     let screens = read_screens()?;
     if screens.is_empty() {
         return Err(PlatformError::NotFound("no macOS screens found"));
     }
+    let frames: Vec<_> = screens.iter().map(|screen| screen.frame).collect();
+    let coordinate_space = CoordinateSpace::from_screen_frames(&frames)
+        .ok_or(PlatformError::NotFound("no macOS screens found"))?;
 
-    Ok(screens)
-}
-
-/// Reads only the screen frames, skipping the per-screen name and work-area
-/// lookups that `screens` pays for; this runs on every command.
-pub(crate) fn coordinate_space() -> PlatformResult<CoordinateSpace> {
-    let mtm = main_thread_marker()?;
-    let screens = NSScreen::screens(mtm);
-    let count = screens.count();
-    let mut frames = Vec::with_capacity(count);
-
-    for index in 0..count {
-        frames.push(ns_rect_to_rect(screens.objectAtIndex(index).frame()));
-    }
-
-    CoordinateSpace::from_screen_frames(&frames)
-        .ok_or(PlatformError::NotFound("no macOS screens found"))
+    Ok(DesktopSnapshot {
+        screens,
+        coordinate_space,
+    })
 }
 
 fn main_thread_marker() -> PlatformResult<MainThreadMarker> {

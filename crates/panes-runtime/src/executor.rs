@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
-use panes_core::{Command, LayoutConfig, LayoutRequest, Rect, WindowHistory, WindowId, calculate};
+use panes_core::{
+    Command, LayoutConfig, LayoutRequest, MAX_TRACKED_WINDOWS, Rect, WindowHistory, WindowId,
+    calculate,
+};
 use panes_platform::{
     CommandInvocation, NativePlatform, PlatformError, ScreenId, ScreenInfo, WindowInfo,
 };
@@ -13,6 +16,7 @@ pub struct CommandExecutor<P> {
     config: LayoutConfig,
     history: WindowHistory,
     window_identities: HashMap<WindowId, WindowIdentity>,
+    recent_windows: VecDeque<WindowId>,
     screen_configuration: Option<Vec<ScreenGeometry>>,
 }
 
@@ -24,6 +28,7 @@ impl<P> CommandExecutor<P> {
             config,
             history: WindowHistory::default(),
             window_identities: HashMap::new(),
+            recent_windows: VecDeque::new(),
             screen_configuration: None,
         }
     }
@@ -83,13 +88,6 @@ impl<P: NativePlatform> CommandExecutor<P> {
         invocation: CommandInvocation,
         repeats: usize,
     ) -> CommandExecutionResult<CommandExecution> {
-        let window = self
-            .platform
-            .front_window()
-            .map_err(CommandExecutionError::Platform)?
-            .ok_or(CommandExecutionError::NoFocusedWindow)?;
-        validate_window(&window)?;
-
         let screens = self
             .platform
             .screens()
@@ -106,6 +104,13 @@ impl<P: NativePlatform> CommandExecutor<P> {
                 screen_id: screen.id,
             });
         }
+
+        let window = self
+            .platform
+            .front_window()
+            .map_err(CommandExecutionError::Platform)?
+            .ok_or(CommandExecutionError::NoFocusedWindow)?;
+        validate_window(&window)?;
 
         self.refresh_history_context(&window, &screens);
 
@@ -179,25 +184,26 @@ impl<P: NativePlatform> CommandExecutor<P> {
             Ok(rect) => rect,
             Err(error) => {
                 if matches!(error, PlatformError::NotFound(_)) {
-                    self.history.clear_window(window.id);
-                    self.window_identities.remove(&window.id);
+                    self.forget_window(window.id);
                 }
                 return Err(CommandExecutionError::Platform(error));
             }
         };
 
         if invocation.command == Command::Restore {
-            self.history.clear_restore_rect(window.id);
+            self.forget_window(window.id);
         } else if self.history.restore_rect(window.id).is_none() {
             self.history.set_restore_rect(window.id, window.rect);
         }
 
-        self.history.record_applied_command(
-            window.id,
-            resulting_command,
-            requested_rect,
-            applied_rect,
-        );
+        if invocation.command != Command::Restore {
+            self.history.record_applied_command(
+                window.id,
+                resulting_command,
+                requested_rect,
+                applied_rect,
+            );
+        }
 
         Ok(CommandExecution {
             invocation,
@@ -237,6 +243,7 @@ impl<P: NativePlatform> CommandExecutor<P> {
         {
             self.history.clear_window(window.id);
         }
+        self.touch_window(window.id);
 
         let configuration = screen_configuration(screens);
         if self
@@ -245,6 +252,36 @@ impl<P: NativePlatform> CommandExecutor<P> {
             .is_some_and(|previous| !screen_configurations_match(&previous, &configuration))
         {
             self.history.clear();
+        }
+    }
+
+    fn touch_window(&mut self, window_id: WindowId) {
+        self.remove_recent_window(window_id);
+        self.recent_windows.push_back(window_id);
+
+        while self.recent_windows.len() > MAX_TRACKED_WINDOWS {
+            if let Some(evicted) = self.recent_windows.pop_front() {
+                self.window_identities.remove(&evicted);
+                self.history.clear_window(evicted);
+                self.platform.forget_window(evicted);
+            }
+        }
+    }
+
+    fn forget_window(&mut self, window_id: WindowId) {
+        self.history.clear_window(window_id);
+        self.window_identities.remove(&window_id);
+        self.remove_recent_window(window_id);
+        self.platform.forget_window(window_id);
+    }
+
+    fn remove_recent_window(&mut self, window_id: WindowId) {
+        if let Some(index) = self
+            .recent_windows
+            .iter()
+            .position(|candidate| *candidate == window_id)
+        {
+            self.recent_windows.remove(index);
         }
     }
 }
@@ -619,6 +656,7 @@ mod tests {
         front_window: PlatformResult<Option<WindowInfo>>,
         set_result: RefCell<Option<PlatformResult<Rect>>>,
         set_calls: RefCell<Vec<(WindowId, Rect)>>,
+        forgotten_windows: RefCell<Vec<WindowId>>,
     }
 
     impl FakePlatform {
@@ -629,6 +667,7 @@ mod tests {
                 front_window: Ok(Some(window(Rect::new(100.0, 100.0, 200.0, 100.0)))),
                 set_result: RefCell::new(None),
                 set_calls: RefCell::new(Vec::new()),
+                forgotten_windows: RefCell::new(Vec::new()),
             }
         }
     }
@@ -658,6 +697,10 @@ mod tests {
             }
 
             Ok(rect)
+        }
+
+        fn forget_window(&self, window_id: WindowId) {
+            self.forgotten_windows.borrow_mut().push(window_id);
         }
 
         fn register_hotkeys(&mut self, _bindings: &[HotkeyBinding]) -> PlatformResult<()> {
@@ -1212,6 +1255,57 @@ mod tests {
             }
         );
         assert_eq!(executor.platform().set_calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn bounds_window_state_and_keeps_recent_restore_history() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+        let original = Rect::new(100.0, 100.0, 200.0, 100.0);
+        let mut last_moved = original;
+
+        for raw_id in 0..=MAX_TRACKED_WINDOWS as u64 {
+            executor.platform_mut().front_window = Ok(Some(WindowInfo {
+                id: WindowId(raw_id),
+                app_id: format!("app.{raw_id}"),
+                title: format!("Window {raw_id}"),
+                ..window(original)
+            }));
+            last_moved = executor
+                .execute(invocation(Command::Maximize))
+                .unwrap()
+                .applied_rect;
+        }
+
+        assert_eq!(executor.recent_windows.len(), MAX_TRACKED_WINDOWS);
+        assert_eq!(executor.window_identities.len(), MAX_TRACKED_WINDOWS);
+        assert_eq!(
+            executor.history().tracked_window_count(),
+            MAX_TRACKED_WINDOWS
+        );
+        assert!(!executor.window_identities.contains_key(&WindowId(0)));
+        assert_eq!(executor.history().restore_rect(WindowId(0)), None);
+        assert_eq!(
+            executor.platform().forgotten_windows.borrow().as_slice(),
+            &[WindowId(0)]
+        );
+
+        let most_recent = WindowId(MAX_TRACKED_WINDOWS as u64);
+        executor.platform_mut().front_window = Ok(Some(WindowInfo {
+            id: most_recent,
+            app_id: format!("app.{}", most_recent.0),
+            title: format!("Window {}", most_recent.0),
+            ..window(last_moved)
+        }));
+        let restored = executor.execute(invocation(Command::Restore)).unwrap();
+
+        assert_eq!(restored.applied_rect, original);
+        assert_eq!(executor.history().restore_rect(most_recent), None);
+        assert!(!executor.window_identities.contains_key(&most_recent));
+        assert!(!executor.recent_windows.contains(&most_recent));
+        assert_eq!(
+            executor.platform().forgotten_windows.borrow().last(),
+            Some(&most_recent)
+        );
     }
 
     #[test]

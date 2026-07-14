@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::HashMap, ffi::c_void};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    ffi::c_void,
+};
 
 use accessibility::{AXAttribute, AXUIElement, Error as AccessibilityError};
 use accessibility_sys::{
@@ -15,40 +19,84 @@ use core_foundation::{
 };
 use core_graphics::geometry::{CGPoint, CGSize};
 use objc2_app_kit::NSRunningApplication;
-use panes_core::{Rect, WindowId};
+use panes_core::{MAX_TRACKED_WINDOWS, Rect, WindowId};
 use panes_platform::{PlatformError, PlatformResult, WindowInfo};
 
-use crate::{accessibility_authorization, coordinates::CoordinateSpace, screen};
+use crate::{accessibility_authorization, coordinates::CoordinateSpace};
 
 const AX_ENHANCED_USER_INTERFACE_ATTRIBUTE: &str = "AXEnhancedUserInterface";
 const AX_FULL_SCREEN_ATTRIBUTE: &str = "AXFullScreen";
 
 #[derive(Default)]
 pub(crate) struct WindowCache {
-    windows: RefCell<HashMap<WindowId, AXUIElement>>,
+    state: RefCell<WindowCacheState>,
+}
+
+#[derive(Default)]
+struct WindowCacheState {
+    windows: HashMap<WindowId, AXUIElement>,
+    recent_windows: VecDeque<WindowId>,
 }
 
 impl WindowCache {
     pub(crate) fn remember(&self, id: WindowId, window: AXUIElement) {
-        self.windows.borrow_mut().insert(id, window);
+        let mut state = self.state.borrow_mut();
+        state.windows.insert(id, window);
+        touch_cached_window(&mut state, id);
     }
 
     pub(crate) fn get(&self, id: WindowId) -> Option<AXUIElement> {
-        self.windows.borrow().get(&id).cloned()
+        let mut state = self.state.borrow_mut();
+        let window = state.windows.get(&id).cloned();
+        if window.is_some() {
+            touch_cached_window(&mut state, id);
+        }
+        window
+    }
+
+    pub(crate) fn forget(&self, id: WindowId) {
+        let mut state = self.state.borrow_mut();
+        state.windows.remove(&id);
+        remove_recent_window(&mut state.recent_windows, id);
     }
 
     /// AXUIElements that refer to the same window compare CFEqual, so a hit
     /// here preserves the window identity across successive accessibility
     /// reads.
     pub(crate) fn known_id(&self, window: &AXUIElement) -> Option<WindowId> {
-        self.windows
-            .borrow()
+        let mut state = self.state.borrow_mut();
+        let id = state
+            .windows
             .iter()
-            .find_map(|(id, cached)| (cached == window).then_some(*id))
+            .find_map(|(id, cached)| (cached == window).then_some(*id));
+        if let Some(id) = id {
+            touch_cached_window(&mut state, id);
+        }
+        id
     }
 }
 
-pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowInfo>> {
+fn touch_cached_window(state: &mut WindowCacheState, id: WindowId) {
+    remove_recent_window(&mut state.recent_windows, id);
+    state.recent_windows.push_back(id);
+
+    while state.recent_windows.len() > MAX_TRACKED_WINDOWS {
+        if let Some(evicted) = state.recent_windows.pop_front() {
+            state.windows.remove(&evicted);
+        }
+    }
+}
+
+fn remove_recent_window(recent_windows: &mut VecDeque<WindowId>, id: WindowId) {
+    if let Some(index) = recent_windows.iter().position(|candidate| *candidate == id) {
+        recent_windows.remove(index);
+    }
+}
+
+pub(crate) fn front_window_in(
+    cache: &WindowCache,
+    space: CoordinateSpace,
+) -> PlatformResult<Option<WindowInfo>> {
     ensure_accessibility_permission()?;
 
     // AXFocusedWindow only exists on application elements, so resolve the
@@ -68,7 +116,6 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
         return Ok(None);
     }
 
-    let space = screen::coordinate_space()?;
     let info = window_info(&window, space, cache.known_id(&window))?;
     cache.remember(info.id, window);
 
@@ -78,20 +125,21 @@ pub(crate) fn front_window(cache: &WindowCache) -> PlatformResult<Option<WindowI
 /// Callers reject hidden or minimized windows using the `WindowInfo` returned
 /// by `front_window`. Frame writes are intentionally best-effort: macOS apps
 /// vary in whether they support changing size, position, or both.
-pub(crate) fn set_window_rect(
+pub(crate) fn set_window_rect_in(
     cache: &WindowCache,
     window_id: WindowId,
     rect: Rect,
+    space: CoordinateSpace,
+    screens: &[panes_platform::ScreenInfo],
 ) -> PlatformResult<Rect> {
     ensure_accessibility_permission()?;
     let window = cache.get(window_id).ok_or(PlatformError::NotFound(
         "macOS window is not cached; read the front window before moving it",
     ))?;
 
-    let space = screen::coordinate_space()?;
     let requested_native_rect = space.panes_rect_to_native(rect);
     let current_native_rect = native_window_rect(&window)?;
-    let destination_work_area = destination_work_area(space, requested_native_rect);
+    let destination_work_area = destination_work_area(space, requested_native_rect, screens);
 
     // Chromium-based apps can enable this application-level accessibility
     // mode, which prevents ordinary window frame updates. Disable it around
@@ -205,23 +253,23 @@ fn remember_first_error(first_error: &mut Option<PlatformError>, result: Platfor
     }
 }
 
-fn destination_work_area(space: CoordinateSpace, requested_native_rect: Rect) -> Rect {
+fn destination_work_area(
+    space: CoordinateSpace,
+    requested_native_rect: Rect,
+    screens: &[panes_platform::ScreenInfo],
+) -> Rect {
     let requested_panes_rect = space.native_rect_to_panes(requested_native_rect);
 
-    screen::screens()
-        .ok()
-        .and_then(|screens| {
-            screens
-                .into_iter()
-                .filter_map(|screen| {
-                    screen
-                        .work_area
-                        .intersection(requested_panes_rect)
-                        .map(|overlap| (screen.work_area, overlap.area()))
-                })
-                .max_by(|(_, left_area), (_, right_area)| left_area.total_cmp(right_area))
-                .map(|(work_area, _)| space.panes_rect_to_native(work_area))
+    screens
+        .iter()
+        .filter_map(|screen| {
+            screen
+                .work_area
+                .intersection(requested_panes_rect)
+                .map(|overlap| (screen.work_area, overlap.area()))
         })
+        .max_by(|(_, left_area), (_, right_area)| left_area.total_cmp(right_area))
+        .map(|(work_area, _)| space.panes_rect_to_native(work_area))
         .unwrap_or(requested_native_rect)
 }
 
