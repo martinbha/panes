@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 dirs = "6.0.0"
+global-hotkey = { version = "0.8.0", default-features = false }
 panes-core = { path = "../panes-core" }
 panes-platform = { path = "../panes-platform" }
 serde = { version = "1.0.228", features = ["derive"] }
