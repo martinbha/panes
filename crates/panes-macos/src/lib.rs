@@ -239,7 +239,9 @@ where
                     return;
                 }
 
-                if !accessibility_authorization::is_trusted() {
+                let trusted = accessibility_authorization::is_trusted();
+                platform.set_accessibility_trusted(trusted);
+                if !trusted {
                     let trusted = accessibility_authorization::prompt();
                     platform.set_accessibility_trusted(trusted);
                     if !trusted {
