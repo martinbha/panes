@@ -10,18 +10,19 @@ real application windows, and physical displays.
 
 ## Setup
 
-1. Build and start the app: `cargo run -p panes-app`.
-2. Run `tccutil reset Accessibility`, relaunch, and confirm the system asks for
+1. Build the app: `cargo build -p panes-app`.
+2. Quit any running Panes process, then run `tccutil reset Accessibility`.
+3. Start the app with `cargo run -p panes-app` and confirm the system asks for
    Accessibility permission once.
-3. Confirm the tray shows **Grant Accessibility Permission…** while access is
+4. Confirm the tray shows **Grant Accessibility Permission…** while access is
    missing. Use it to open System Settings → Privacy & Security →
    Accessibility, then grant access.
-4. Confirm the tray changes to **Accessibility Permission Granted** without a
+5. Confirm the tray changes to **Accessibility Permission Granted** without a
    restart and that subsequent commands do not repeat the system prompt.
-5. Rebuilt dev binaries can silently lose trust; re-grant if commands stop
+6. Rebuilt dev binaries can silently lose trust; re-grant if commands stop
    working.
-6. Confirm the panes tray icon also includes command submenus and Quit.
-7. Use a normal resizable app window (e.g. TextEdit, Safari) as the target.
+7. Confirm the panes tray icon also includes command submenus and Quit.
+8. Use a normal resizable app window (e.g. TextEdit, Safari) as the target.
 
 For every command, verify both invocation paths at least once per session:
 the default hotkey and the tray menu item must behave identically.
