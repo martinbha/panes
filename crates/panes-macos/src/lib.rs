@@ -2,8 +2,10 @@ use std::{
     collections::{HashMap, VecDeque},
     fmt::Display,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
+mod accessibility_authorization;
 mod coordinates;
 mod screen;
 mod window;
@@ -34,6 +36,8 @@ use tray_icon::{
 
 const QUIT_MENU_ID: &str = "panes.quit";
 const GUIDE_MENU_ID: &str = "panes.guide";
+const ACCESSIBILITY_MENU_ID: &str = "panes.accessibility";
+const ACCESSIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct MacOsPlatform {
     tray: Option<TrayState>,
@@ -73,6 +77,15 @@ impl MacOsPlatform {
                 command,
                 source: CommandSource::Keyboard,
             })
+    }
+
+    fn set_accessibility_trusted(&self, trusted: bool) {
+        let Some(tray) = &self.tray else {
+            return;
+        };
+        let (text, enabled) = accessibility_menu_item_state(trusted);
+        tray.accessibility_item.set_text(text);
+        tray.accessibility_item.set_enabled(enabled);
     }
 }
 
@@ -138,7 +151,8 @@ impl NativePlatform for MacOsPlatform {
     }
 
     fn show_tray_menu(&mut self, entries: &[MenuEntry]) -> PlatformResult<()> {
-        let (menu, command_by_menu_id) = build_tray_menu(entries)?;
+        let trusted = accessibility_authorization::is_trusted();
+        let (menu, command_by_menu_id, accessibility_item) = build_tray_menu(entries, trusted)?;
         let icon = panes_icon()?;
         let tray_icon = TrayIconBuilder::new()
             .with_tooltip("panes")
@@ -152,6 +166,7 @@ impl NativePlatform for MacOsPlatform {
             _tray_icon: tray_icon,
             _menu: menu,
             command_by_menu_id,
+            accessibility_item,
         });
         Ok(())
     }
@@ -208,9 +223,10 @@ where
     }));
 
     let mut platform = MacOsPlatform::new();
+    let mut next_accessibility_check = None;
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        *control_flow = next_accessibility_check.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
 
         match event {
             Event::NewEvents(StartCause::Init) => {
@@ -220,11 +236,52 @@ where
                 {
                     eprintln!("panes failed to start native macOS input runtime: {error:?}");
                     *control_flow = ControlFlow::Exit;
+                    return;
+                }
+
+                let trusted = accessibility_authorization::is_trusted();
+                platform.set_accessibility_trusted(trusted);
+                if !trusted {
+                    let trusted = accessibility_authorization::prompt();
+                    platform.set_accessibility_trusted(trusted);
+                    if !trusted {
+                        let next_check = Instant::now() + ACCESSIBILITY_POLL_INTERVAL;
+                        next_accessibility_check = Some(next_check);
+                        *control_flow = ControlFlow::WaitUntil(next_check);
+                    }
+                }
+            }
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                if accessibility_authorization::is_trusted() {
+                    platform.set_accessibility_trusted(true);
+                    next_accessibility_check = None;
+                    *control_flow = ControlFlow::Wait;
+                } else {
+                    let next_check = Instant::now() + ACCESSIBILITY_POLL_INTERVAL;
+                    next_accessibility_check = Some(next_check);
+                    *control_flow = ControlFlow::WaitUntil(next_check);
                 }
             }
             Event::UserEvent(UserEvent::Menu(event)) => {
                 if event.id() == QUIT_MENU_ID {
                     *control_flow = ControlFlow::Exit;
+                    return;
+                }
+
+                if event.id() == ACCESSIBILITY_MENU_ID {
+                    let trusted = accessibility_authorization::prompt();
+                    platform.set_accessibility_trusted(trusted);
+                    if trusted {
+                        next_accessibility_check = None;
+                        *control_flow = ControlFlow::Wait;
+                    } else {
+                        if let Err(error) = accessibility_authorization::open_settings() {
+                            eprintln!("panes could not open Accessibility settings: {error:?}");
+                        }
+                        let next_check = Instant::now() + ACCESSIBILITY_POLL_INTERVAL;
+                        next_accessibility_check = Some(next_check);
+                        *control_flow = ControlFlow::WaitUntil(next_check);
+                    }
                     return;
                 }
 
@@ -261,6 +318,7 @@ struct TrayState {
     _tray_icon: TrayIcon,
     _menu: Menu,
     command_by_menu_id: HashMap<String, Command>,
+    accessibility_item: MenuItem,
 }
 
 struct RegisteredHotkeys {
@@ -294,9 +352,26 @@ fn coalesce_invocations(
     runs
 }
 
-fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<String, Command>)> {
+fn build_tray_menu(
+    entries: &[MenuEntry],
+    accessibility_trusted: bool,
+) -> PlatformResult<(Menu, HashMap<String, Command>, MenuItem)> {
     let menu = Menu::new();
     let mut command_by_menu_id = HashMap::with_capacity(entries.len());
+
+    let (accessibility_text, accessibility_enabled) =
+        accessibility_menu_item_state(accessibility_trusted);
+    let accessibility_item = MenuItem::with_id(
+        ACCESSIBILITY_MENU_ID,
+        accessibility_text,
+        accessibility_enabled,
+        None,
+    );
+    menu.append(&accessibility_item).map_err(|error| {
+        native_error("failed to append Accessibility permission menu item", error)
+    })?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|error| native_error("failed to append menu separator", error))?;
 
     for category in CommandCategory::ALL {
         let submenu = Submenu::new(category.label(), true);
@@ -348,7 +423,15 @@ fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<Strin
     menu.append(&quit)
         .map_err(|error| native_error("failed to append quit menu item", error))?;
 
-    Ok((menu, command_by_menu_id))
+    Ok((menu, command_by_menu_id, accessibility_item))
+}
+
+fn accessibility_menu_item_state(trusted: bool) -> (&'static str, bool) {
+    if trusted {
+        ("Accessibility Permission Granted", false)
+    } else {
+        ("Grant Accessibility Permission…", true)
+    }
 }
 
 fn parse_hotkey(binding: &HotkeyBinding) -> Result<HotKey, PlatformError> {
@@ -598,6 +681,18 @@ mod tests {
         assert_eq!(
             command_menu_id(Command::LeftHalf),
             "panes.command.left-half"
+        );
+    }
+
+    #[test]
+    fn accessibility_menu_item_reflects_trust() {
+        assert_eq!(
+            accessibility_menu_item_state(false),
+            ("Grant Accessibility Permission…", true)
+        );
+        assert_eq!(
+            accessibility_menu_item_state(true),
+            ("Accessibility Permission Granted", false)
         );
     }
 

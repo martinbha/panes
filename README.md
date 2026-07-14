@@ -57,6 +57,32 @@ cargo test
 cargo run -p panes-app
 ```
 
+## macOS Accessibility permission
+
+Panes needs macOS Accessibility permission to inspect and move application
+windows. On the first launch, it requests access with the system prompt. While
+access is missing, the tray shows **Grant Accessibility Permission…**; choose
+it to open System Settings → Privacy & Security → Accessibility.
+
+Panes checks for the grant in the background and becomes ready without a
+restart. The tray item changes to **Accessibility Permission Granted** when the
+process is trusted. Window commands also perform a non-prompting trust check,
+so using a command never repeats the system prompt.
+
+For permission-flow testing, quit Panes and reset Accessibility consent:
+
+```bash
+# Reset all Accessibility grants (useful for `cargo run` development builds).
+tccutil reset Accessibility
+
+# Reset only the bundled app.
+tccutil reset Accessibility io.github.martinbha.panes
+```
+
+Accessibility trust is tied to the app's identity, signature, location, and
+binary. Rebuilding a development binary or moving the app can silently remove
+trust; reset or re-grant access if window commands stop working after a build.
+
 ## macOS app bundle
 
 On macOS, create a double-clickable release app with:
@@ -70,9 +96,8 @@ for development and manual testing; drag it to `/Applications` if you want to
 keep it there. Panes runs as a menu-bar-only app, so it does not appear in the
 Dock.
 
-The first launch requires Accessibility access for `Panes` in System Settings
-→ Privacy & Security → Accessibility. Rebuilds and changes to the app’s
-location can require granting access again.
+See [macOS Accessibility permission](#macos-accessibility-permission) for the
+first-launch flow and development reset commands.
 
 For an app intended to leave the development machine, sign and notarize the
 bundle with an Apple Developer certificate before distributing it.

@@ -2,17 +2,15 @@ use std::{cell::RefCell, collections::HashMap, ffi::c_void};
 
 use accessibility::{AXAttribute, AXUIElement, Error as AccessibilityError};
 use accessibility_sys::{
-    AXError, AXIsProcessTrustedWithOptions, AXUIElementGetPid, AXUIElementSetAttributeValue,
-    AXValueCreate, AXValueGetType, AXValueGetTypeID, AXValueGetValue, AXValueRef, error_string,
-    kAXErrorAPIDisabled, kAXErrorAttributeUnsupported, kAXErrorNoValue, kAXFloatingWindowSubrole,
+    AXError, AXUIElementGetPid, AXUIElementSetAttributeValue, AXValueCreate, AXValueGetType,
+    AXValueGetTypeID, AXValueGetValue, AXValueRef, error_string, kAXErrorAPIDisabled,
+    kAXErrorAttributeUnsupported, kAXErrorNoValue, kAXFloatingWindowSubrole,
     kAXFocusedApplicationAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXSystemDialogSubrole,
-    kAXSystemFloatingWindowSubrole, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint,
-    kAXValueTypeCGSize, kAXWindowRole, pid_t,
+    kAXSystemFloatingWindowSubrole, kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowRole, pid_t,
 };
 use core_foundation::{
     base::{CFType, CFTypeRef, TCFType},
     boolean::CFBoolean,
-    dictionary::CFDictionary,
     string::CFString,
 };
 use core_graphics::geometry::{CGPoint, CGSize};
@@ -20,9 +18,8 @@ use objc2_app_kit::NSRunningApplication;
 use panes_core::{Rect, WindowId};
 use panes_platform::{PlatformError, PlatformResult, WindowInfo};
 
-use crate::{coordinates::CoordinateSpace, screen};
+use crate::{accessibility_authorization, coordinates::CoordinateSpace, screen};
 
-const ACCESSIBILITY_PERMISSION_ERROR: &str = "Enable Accessibility access for panes in System Settings > Privacy & Security > Accessibility, then restart panes";
 const AX_ENHANCED_USER_INTERFACE_ATTRIBUTE: &str = "AXEnhancedUserInterface";
 const AX_FULL_SCREEN_ATTRIBUTE: &str = "AXFullScreen";
 
@@ -379,16 +376,10 @@ fn focused_or_first_window(application: &AXUIElement) -> PlatformResult<Option<A
 }
 
 fn ensure_accessibility_permission() -> PlatformResult<()> {
-    let prompt_key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
-    let options = CFDictionary::from_CFType_pairs(&[(prompt_key, CFBoolean::true_value())]);
-
-    // SAFETY: The options dictionary contains the documented prompt key with a CFBoolean value.
-    if unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) } {
+    if accessibility_authorization::is_trusted() {
         Ok(())
     } else {
-        Err(PlatformError::PermissionDenied(
-            ACCESSIBILITY_PERMISSION_ERROR,
-        ))
+        Err(accessibility_authorization::permission_denied())
     }
 }
 
@@ -655,7 +646,7 @@ fn map_accessibility_error(context: &'static str, error: AccessibilityError) -> 
 
 fn ax_error(context: &'static str, error: AXError) -> PlatformError {
     if error == kAXErrorAPIDisabled {
-        PlatformError::PermissionDenied(ACCESSIBILITY_PERMISSION_ERROR)
+        accessibility_authorization::permission_denied()
     } else {
         PlatformError::Native(format!("{context}: {}", error_string(error)))
     }

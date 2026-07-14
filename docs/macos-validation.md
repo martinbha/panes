@@ -10,12 +10,19 @@ real application windows, and physical displays.
 
 ## Setup
 
-1. Build and start the app: `cargo run -p panes-app`.
-2. Grant Accessibility permission to the launching process when prompted
-   (System Settings → Privacy & Security → Accessibility). Rebuilt dev binaries
-   can silently lose trust; re-grant if commands stop working.
-3. Confirm the panes tray icon appears with command submenus and Quit.
-4. Use a normal resizable app window (e.g. TextEdit, Safari) as the target.
+1. Build the app: `cargo build -p panes-app`.
+2. Quit any running Panes process, then run `tccutil reset Accessibility`.
+3. Start the app with `cargo run -p panes-app` and confirm the system asks for
+   Accessibility permission once.
+4. Confirm the tray shows **Grant Accessibility Permission…** while access is
+   missing. Use it to open System Settings → Privacy & Security →
+   Accessibility, then grant access.
+5. Confirm the tray changes to **Accessibility Permission Granted** without a
+   restart and that subsequent commands do not repeat the system prompt.
+6. Rebuilt dev binaries can silently lose trust; re-grant if commands stop
+   working.
+7. Confirm the panes tray icon also includes command submenus and Quit.
+8. Use a normal resizable app window (e.g. TextEdit, Safari) as the target.
 
 For every command, verify both invocation paths at least once per session:
 the default hotkey and the tray menu item must behave identically.
@@ -112,8 +119,5 @@ Validate by running with a modified `LayoutConfig` in a dev build.
 - Grow can push a window past the screen edge, and display attach/detach and
   offscreen safety are not hardened yet
   ([#8](https://github.com/martinbha/panes/issues/8)).
-- Missing Accessibility permission fails silently from the tray; errors only
-  appear on the launching console
-  ([#15](https://github.com/martinbha/panes/issues/15)).
 - No scriptable driver exists yet to automate this checklist
   ([#18](https://github.com/martinbha/panes/issues/18)).
