@@ -34,7 +34,8 @@ use tao::{
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{
-        Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu, accelerator::Accelerator,
+        Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+        accelerator::{Accelerator, CMD_OR_CTRL, Code},
     },
 };
 
@@ -434,11 +435,15 @@ fn build_tray_menu(
     menu.append(&separator)
         .map_err(|error| native_error("failed to append menu separator", error))?;
 
-    let quit = MenuItem::with_id(QUIT_MENU_ID, "Quit Panes", true, None);
+    let quit = MenuItem::with_id(QUIT_MENU_ID, "Quit Panes", true, Some(quit_accelerator()));
     menu.append(&quit)
         .map_err(|error| native_error("failed to append quit menu item", error))?;
 
     Ok((menu, command_by_menu_id, accessibility_item))
+}
+
+fn quit_accelerator() -> Accelerator {
+    Accelerator::new(Some(CMD_OR_CTRL), Code::KeyQ)
 }
 
 fn accessibility_menu_item_state(trusted: bool) -> (&'static str, bool) {
@@ -641,6 +646,14 @@ mod tests {
         );
         assert_eq!(pretty_accelerator("Control+Alt+U"), "\u{2303}\u{2325}U");
         assert_eq!(pretty_accelerator("Control+Alt+Equal"), "\u{2303}\u{2325}=");
+    }
+
+    #[test]
+    fn quit_uses_the_native_command_q_accelerator() {
+        let accelerator = quit_accelerator();
+
+        assert!(accelerator.modifiers().contains(CMD_OR_CTRL));
+        assert_eq!(accelerator.key(), Code::KeyQ);
     }
 
     #[test]
