@@ -18,7 +18,7 @@ use core_foundation::{
     string::CFString,
 };
 use core_graphics::geometry::{CGPoint, CGSize};
-use objc2_app_kit::NSRunningApplication;
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use panes_core::{MAX_TRACKED_WINDOWS, Rect, WindowId};
 use panes_platform::{PlatformError, PlatformResult, WindowInfo};
 
@@ -369,7 +369,9 @@ fn focused_application(system: &AXUIElement) -> PlatformResult<Option<AXUIElemen
     ));
     let value = match system.attribute(&attribute) {
         Ok(value) => value,
-        Err(error) if optional_accessibility_error(&error) => return Ok(None),
+        Err(error) if optional_accessibility_error(&error) => {
+            return Ok(frontmost_application());
+        }
         Err(error) => {
             return Err(map_accessibility_error(
                 "failed to read focused macOS application",
@@ -384,6 +386,13 @@ fn focused_application(system: &AXUIElement) -> PlatformResult<Option<AXUIElemen
             "focused macOS application was not an accessibility element".to_owned(),
         )),
     }
+}
+
+/// macOS 26 sometimes reports no system-wide focused application even while
+/// an app is frontmost; resolve it through NSWorkspace instead.
+fn frontmost_application() -> Option<AXUIElement> {
+    let front = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    Some(AXUIElement::application(front.processIdentifier()))
 }
 
 fn focused_or_first_window(application: &AXUIElement) -> PlatformResult<Option<AXUIElement>> {
