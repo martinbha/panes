@@ -2,6 +2,8 @@ use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
     ffi::c_void,
+    thread,
+    time::Duration,
 };
 
 use accessibility::{AXAttribute, AXUIElement, Error as AccessibilityError};
@@ -20,7 +22,7 @@ use core_foundation::{
 use core_graphics::geometry::{CGPoint, CGSize};
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use panes_core::{MAX_TRACKED_WINDOWS, Rect, WindowId};
-use panes_platform::{PlatformError, PlatformResult, WindowInfo};
+use panes_platform::{PlatformError, PlatformResult, ScreenId, WindowInfo};
 
 use crate::{accessibility_authorization, coordinates::CoordinateSpace};
 
@@ -140,6 +142,13 @@ pub(crate) fn set_window_rect_in(
     let requested_native_rect = space.panes_rect_to_native(rect);
     let current_native_rect = native_window_rect(&window)?;
     let destination_work_area = destination_work_area(space, requested_native_rect, screens);
+    let moved_across_displays = screen_id_for_native_rect(space, current_native_rect, screens)
+        .zip(screen_id_for_native_rect(
+            space,
+            requested_native_rect,
+            screens,
+        ))
+        .is_some_and(|(source, destination)| source != destination);
 
     // Chromium-based apps can enable this application-level accessibility
     // mode, which prevents ordinary window frame updates. Disable it around
@@ -151,6 +160,7 @@ pub(crate) fn set_window_rect_in(
         current_native_rect,
         requested_native_rect,
         destination_work_area,
+        moved_across_displays,
     );
     if let Some(application) = enhanced_ui_application {
         let _ = set_enhanced_user_interface(&application, true);
@@ -172,6 +182,7 @@ fn apply_window_frame(
     current: Rect,
     requested: Rect,
     destination_work_area: Rect,
+    moved_across_displays: bool,
 ) -> PlatformResult<Rect> {
     let can_resize = is_size_settable(window);
     let target = if can_resize {
@@ -185,41 +196,31 @@ fn apply_window_frame(
         || !coordinates_match(current.origin.y, target.origin.y);
     let mut first_error = None;
 
-    // macOS constrains an AXSize update to the display the window is currently
-    // on. Resizing before and after the position update lets cross-display
-    // changes succeed in Chromium and other apps that enforce that rule.
-    if can_resize && size_changed {
-        remember_first_error(
-            &mut first_error,
-            set_ax_size(
-                window,
-                kAXSizeAttribute,
-                CGSize::new(target.size.width, target.size.height),
-            ),
-        );
-    }
-    if position_changed {
-        remember_first_error(
-            &mut first_error,
-            set_ax_point(
-                window,
-                kAXPositionAttribute,
-                CGPoint::new(target.origin.x, target.origin.y),
-            ),
-        );
-    }
-    if can_resize && size_changed {
-        remember_first_error(
-            &mut first_error,
-            set_ax_size(
-                window,
-                kAXSizeAttribute,
-                CGSize::new(target.size.width, target.size.height),
-            ),
-        );
-    }
+    write_window_frame(
+        window,
+        target,
+        can_resize && size_changed,
+        position_changed,
+        &mut first_error,
+    );
 
     let mut applied = native_window_rect(window)?;
+    if moved_across_displays
+        && can_resize
+        && !coordinates_match(applied.size.height, target.size.height)
+    {
+        // Retry the complete frame when the destination display's height has
+        // not taken yet. A final delayed attempt gives the target app time to
+        // process the display transition before sizing it again.
+        write_window_frame(window, target, true, true, &mut first_error);
+        applied = native_window_rect(window)?;
+        if !coordinates_match(applied.size.height, target.size.height) {
+            thread::sleep(Duration::from_millis(25));
+            write_window_frame(window, target, true, true, &mut first_error);
+            applied = native_window_rect(window)?;
+        }
+    }
+
     let aligned = align_constrained_rect(applied, requested, destination_work_area);
     if !coordinates_match(applied.origin.x, aligned.origin.x)
         || !coordinates_match(applied.origin.y, aligned.origin.y)
@@ -242,6 +243,48 @@ fn apply_window_frame(
     }
 
     Ok(space.native_rect_to_panes(applied))
+}
+
+fn write_window_frame(
+    window: &AXUIElement,
+    target: Rect,
+    set_size: bool,
+    set_position: bool,
+    first_error: &mut Option<PlatformError>,
+) {
+    // macOS can constrain an AXSize update to the display the window is
+    // currently on. Resizing before and after the position update lets the
+    // destination display apply its own constraints.
+    if set_size {
+        remember_first_error(
+            first_error,
+            set_ax_size(
+                window,
+                kAXSizeAttribute,
+                CGSize::new(target.size.width, target.size.height),
+            ),
+        );
+    }
+    if set_position {
+        remember_first_error(
+            first_error,
+            set_ax_point(
+                window,
+                kAXPositionAttribute,
+                CGPoint::new(target.origin.x, target.origin.y),
+            ),
+        );
+    }
+    if set_size {
+        remember_first_error(
+            first_error,
+            set_ax_size(
+                window,
+                kAXSizeAttribute,
+                CGSize::new(target.size.width, target.size.height),
+            ),
+        );
+    }
 }
 
 fn remember_first_error(first_error: &mut Option<PlatformError>, result: PlatformResult<()>) {
@@ -270,6 +313,29 @@ fn destination_work_area(
         .max_by(|(_, left_area), (_, right_area)| left_area.total_cmp(right_area))
         .map(|(work_area, _)| space.panes_rect_to_native(work_area))
         .unwrap_or(requested_native_rect)
+}
+
+fn screen_id_for_native_rect(
+    space: CoordinateSpace,
+    native_rect: Rect,
+    screens: &[panes_platform::ScreenInfo],
+) -> Option<ScreenId> {
+    let rect = space.native_rect_to_panes(native_rect);
+
+    screens
+        .iter()
+        .filter_map(|screen| {
+            screen
+                .frame
+                .intersection(rect)
+                .map(|overlap| (screen.id, overlap.area()))
+        })
+        .max_by(|(left_id, left_area), (right_id, right_area)| {
+            left_area
+                .total_cmp(right_area)
+                .then_with(|| right_id.0.cmp(&left_id.0))
+        })
+        .map(|(id, _)| id)
 }
 
 fn align_constrained_rect(actual: Rect, zone: Rect, work_area: Rect) -> Rect {
@@ -711,6 +777,41 @@ fn ax_error(context: &'static str, error: AXError) -> PlatformError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_rects_resolve_to_the_display_with_the_largest_overlap() {
+        let frames = [
+            Rect::new(0.0, 0.0, 1000.0, 800.0),
+            Rect::new(1000.0, 0.0, 1200.0, 900.0),
+        ];
+        let space = CoordinateSpace::from_screen_frames(&frames).unwrap();
+        let screens = [
+            panes_platform::ScreenInfo {
+                id: ScreenId(1),
+                name: "First".to_owned(),
+                frame: frames[0],
+                work_area: frames[0],
+            },
+            panes_platform::ScreenInfo {
+                id: ScreenId(2),
+                name: "Second".to_owned(),
+                frame: frames[1],
+                work_area: frames[1],
+            },
+        ];
+
+        let first = space.panes_rect_to_native(Rect::new(500.0, 0.0, 500.0, 800.0));
+        let second = space.panes_rect_to_native(Rect::new(1000.0, 0.0, 600.0, 900.0));
+
+        assert_eq!(
+            screen_id_for_native_rect(space, first, &screens),
+            Some(ScreenId(1))
+        );
+        assert_eq!(
+            screen_id_for_native_rect(space, second, &screens),
+            Some(ScreenId(2))
+        );
+    }
 
     #[test]
     fn constrained_windows_anchor_to_the_matching_half_edge() {
