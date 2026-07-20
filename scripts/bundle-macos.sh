@@ -68,4 +68,11 @@ rm "$rendered_icon"
 iconutil --convert icns --output "$resources_dir/Panes.icns" "$iconset_dir"
 
 plutil -lint "$contents_dir/Info.plist" >/dev/null
+bundle_identifier="$(plutil -extract CFBundleIdentifier raw "$contents_dir/Info.plist")"
+designated_requirement="=designated => identifier \"$bundle_identifier\""
+codesign --force --deep --sign - \
+    --identifier "$bundle_identifier" \
+    --requirements "$designated_requirement" \
+    "$app_dir"
+codesign --verify --deep --strict "$app_dir"
 echo "Created $app_dir"
