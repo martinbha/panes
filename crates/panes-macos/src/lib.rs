@@ -241,6 +241,7 @@ where
     // clicks the tray menu, and no Dock icon appears.
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    event_loop.set_activate_ignoring_other_apps(false);
     let proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = proxy.send_event(UserEvent::Menu(event));
