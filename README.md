@@ -101,9 +101,11 @@ tccutil reset Accessibility
 tccutil reset Accessibility io.github.martinbha.panes
 ```
 
-Accessibility trust is tied to the app's identity, signature, location, and
-binary. Rebuilding a development binary or moving the app can silently remove
-trust; reset or re-grant access if window commands stop working after a build.
+Accessibility trust is tied to the app's identity, signature, and location.
+The bundled app uses a stable ad-hoc designated requirement, so rebuilding it
+at the same location should preserve its grant. Running a bare development
+binary, moving or replacing the app, or changing its signature may require you
+to reset or re-grant access.
 
 ## macOS app bundle
 
@@ -113,10 +115,12 @@ On macOS, create a double-clickable release app with:
 scripts/bundle-macos.sh
 ```
 
-The command creates `dist/Panes.app`. It is an unsigned local build intended
-for development and manual testing; drag it to `/Applications` if you want to
-keep it there. Panes runs as a menu-bar-only app, so it does not appear in the
-Dock.
+The command creates `dist/Panes.app`. It is an ad-hoc signed local build
+intended for development and manual testing. The stable signing requirement
+helps preserve Accessibility permission across rebuilds at the same location,
+but the app is not Developer ID signed or notarized. Move it to `/Applications`
+before granting Accessibility permission if you want to keep it there. Panes
+runs as a menu-bar-only app, so it does not appear in the Dock.
 
 Create the versioned ZIP used by CI with:
 

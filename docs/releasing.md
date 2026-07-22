@@ -22,7 +22,10 @@ scripts/package-macos.sh
 ```
 
 This builds `Panes.app`, renders the checked-in SVG icon to `Panes.icns`,
-validates `Info.plist`, and preserves the executable mode in the ZIP archive.
+validates `Info.plist`, applies a stable ad-hoc signature for local development,
+and preserves the executable mode in the ZIP archive. The ad-hoc signature
+helps retain Accessibility permission across same-location rebuilds; it does
+not replace Developer ID signing or notarization for public distribution.
 
 On 64-bit Windows PowerShell:
 
