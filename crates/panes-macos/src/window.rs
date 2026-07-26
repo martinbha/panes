@@ -522,6 +522,12 @@ fn window_info(
             .and_then(|app| app.bundleIdentifier())
             .map(|bundle_id| bundle_id.to_string())
             .unwrap_or_else(|| format!("pid:{pid}")),
+        app_generation: app
+            .as_ref()
+            .and_then(|app| app.launchDate())
+            .map_or(pid as u64, |date| {
+                date.timeIntervalSinceReferenceDate().to_bits()
+            }),
         title,
         rect: window_rect(window, space)?,
         is_resizable: is_size_settable(window),

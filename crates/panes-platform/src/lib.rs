@@ -17,6 +17,11 @@ pub struct ScreenInfo {
 pub struct WindowInfo {
     pub id: WindowId,
     pub app_id: String,
+    /// Identifies the current lifetime of the owning application process.
+    ///
+    /// Unlike a process id alone, this changes when an operating-system
+    /// process identifier is reused after the previous process exits.
+    pub app_generation: u64,
     pub title: String,
     pub rect: Rect,
     pub is_resizable: bool,

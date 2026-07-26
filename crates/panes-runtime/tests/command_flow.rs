@@ -79,6 +79,7 @@ fn window(rect: Rect) -> WindowInfo {
     WindowInfo {
         id: WINDOW_ID,
         app_id: "test.app".to_owned(),
+        app_generation: 1,
         title: "Test Window".to_owned(),
         rect,
         is_resizable: true,

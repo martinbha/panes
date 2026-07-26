@@ -289,14 +289,14 @@ impl<P: NativePlatform> CommandExecutor<P> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct WindowIdentity {
     app_id: String,
-    title: String,
+    app_generation: u64,
 }
 
 impl From<&WindowInfo> for WindowIdentity {
     fn from(window: &WindowInfo) -> Self {
         Self {
             app_id: window.app_id.clone(),
-            title: window.title.clone(),
+            app_generation: window.app_generation,
         }
     }
 }
@@ -1242,7 +1242,43 @@ mod tests {
         let moved = executor.execute(invocation(Command::LeftHalf)).unwrap();
         executor.platform_mut().front_window = Ok(Some(WindowInfo {
             app_id: "different.app".to_owned(),
+            app_generation: 2,
             title: "Different Window".to_owned(),
+            ..window(moved.applied_rect)
+        }));
+
+        let error = executor.execute(invocation(Command::Restore)).unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandExecutionError::NoRestoreRect {
+                window_id: WindowId(42)
+            }
+        );
+        assert_eq!(executor.platform().set_calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn changing_a_window_title_preserves_restore_history() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+        let original = Rect::new(100.0, 100.0, 200.0, 100.0);
+        let moved = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(WindowInfo {
+            title: "A different document title".to_owned(),
+            ..window(moved.applied_rect)
+        }));
+
+        let restored = executor.execute(invocation(Command::Restore)).unwrap();
+
+        assert_eq!(restored.requested_rect, original);
+    }
+
+    #[test]
+    fn reused_window_id_in_a_new_process_generation_cannot_restore() {
+        let mut executor = CommandExecutor::with_default_config(FakePlatform::new());
+        let moved = executor.execute(invocation(Command::LeftHalf)).unwrap();
+        executor.platform_mut().front_window = Ok(Some(WindowInfo {
+            app_generation: 2,
             ..window(moved.applied_rect)
         }));
 
@@ -1428,6 +1464,7 @@ mod tests {
         WindowInfo {
             id: WindowId(42),
             app_id: "test.app".to_owned(),
+            app_generation: 1,
             title: "Test Window".to_owned(),
             rect,
             is_resizable: true,
