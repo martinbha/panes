@@ -19,19 +19,16 @@ pub fn calculate(request: LayoutRequest, config: &LayoutConfig) -> LayoutResult 
     let screen = request.screen;
     let rect = match request.command {
         Command::LeftHalf => horizontal_split(screen, Edge::LEFT, config.horizontal_split),
-        Command::RightHalf => horizontal_split(screen, Edge::RIGHT, 1.0 - config.horizontal_split),
+        Command::RightHalf => horizontal_split(screen, Edge::RIGHT, config.horizontal_split),
         Command::CenterHalf => center_half(screen),
         Command::TopHalf => vertical_split(screen, Edge::TOP, config.vertical_split),
-        Command::BottomHalf => vertical_split(screen, Edge::BOTTOM, 1.0 - config.vertical_split),
+        Command::BottomHalf => vertical_split(screen, Edge::BOTTOM, config.vertical_split),
         Command::TopLeft => corner(screen, Edge::LEFT.union(Edge::TOP), &config),
         Command::TopRight => corner(screen, Edge::RIGHT.union(Edge::TOP), &config),
         Command::BottomLeft => corner(screen, Edge::LEFT.union(Edge::BOTTOM), &config),
         Command::BottomRight => corner(screen, Edge::RIGHT.union(Edge::BOTTOM), &config),
         Command::FirstThird => third(screen, 0, 1),
-        Command::CenterThird => match screen.orientation() {
-            Orientation::Landscape => third(screen, 1, 1),
-            Orientation::Portrait => horizontal_band(screen, 1.0 / 3.0, 1.0 / 3.0),
-        },
+        Command::CenterThird => third(screen, 1, 1),
         Command::LastThird => third(screen, 2, 1),
         Command::FirstTwoThirds => third(screen, 0, 2),
         Command::CenterTwoThirds => match screen.orientation() {
@@ -73,48 +70,44 @@ pub fn calculate(request: LayoutRequest, config: &LayoutConfig) -> LayoutResult 
     }
 }
 
-fn horizontal_split(screen: Rect, edge: Edge, width_fraction: f64) -> Rect {
-    let width = (screen.size.width * width_fraction).floor();
-    let x = if edge.contains(Edge::RIGHT) {
-        screen.max_x() - width
+fn horizontal_split(screen: Rect, edge: Edge, leading_fraction: f64) -> Rect {
+    let leading_width = (screen.size.width * leading_fraction).floor();
+    let (x, width) = if edge.contains(Edge::RIGHT) {
+        (
+            screen.min_x() + leading_width,
+            screen.size.width - leading_width,
+        )
     } else {
-        screen.min_x()
+        (screen.min_x(), leading_width)
     };
     Rect::new(x, screen.min_y(), width, screen.size.height)
 }
 
-fn vertical_split(screen: Rect, edge: Edge, height_fraction: f64) -> Rect {
-    let height = (screen.size.height * height_fraction).floor();
-    let y = if edge.contains(Edge::TOP) {
-        screen.max_y() - height
+fn vertical_split(screen: Rect, edge: Edge, leading_fraction: f64) -> Rect {
+    let leading_height = (screen.size.height * leading_fraction).floor();
+    let trailing_height = screen.size.height - leading_height;
+    let (y, height) = if edge.contains(Edge::TOP) {
+        (screen.min_y() + trailing_height, leading_height)
     } else {
-        screen.min_y()
+        (screen.min_y(), trailing_height)
     };
     Rect::new(screen.min_x(), y, screen.size.width, height)
 }
 
 fn corner(screen: Rect, edges: Edge, config: &LayoutConfig) -> Rect {
-    let width_fraction = if edges.contains(Edge::RIGHT) {
-        1.0 - config.horizontal_split
+    let leading_width = (screen.size.width * config.horizontal_split).floor();
+    let trailing_width = screen.size.width - leading_width;
+    let leading_height = (screen.size.height * config.vertical_split).floor();
+    let trailing_height = screen.size.height - leading_height;
+    let (x, width) = if edges.contains(Edge::RIGHT) {
+        (screen.min_x() + leading_width, trailing_width)
     } else {
-        config.horizontal_split
+        (screen.min_x(), leading_width)
     };
-    let height_fraction = if edges.contains(Edge::BOTTOM) {
-        1.0 - config.vertical_split
+    let (y, height) = if edges.contains(Edge::TOP) {
+        (screen.min_y() + trailing_height, leading_height)
     } else {
-        config.vertical_split
-    };
-    let width = (screen.size.width * width_fraction).floor();
-    let height = (screen.size.height * height_fraction).floor();
-    let x = if edges.contains(Edge::RIGHT) {
-        screen.max_x() - width
-    } else {
-        screen.min_x()
-    };
-    let y = if edges.contains(Edge::TOP) {
-        screen.max_y() - height
-    } else {
-        screen.min_y()
+        (screen.min_y(), trailing_height)
     };
     Rect::new(x, y, width, height)
 }
@@ -133,20 +126,30 @@ fn center_half(screen: Rect) -> Rect {
 }
 
 fn third(screen: Rect, offset: usize, span: usize) -> Rect {
+    debug_assert!(offset < 3);
+    debug_assert!((1..=2).contains(&span));
+    debug_assert!(offset + span <= 3);
+
     match screen.orientation() {
         Orientation::Landscape => {
             let unit = (screen.size.width / 3.0).floor();
-            Rect::new(
-                screen.min_x() + unit * offset as f64,
-                screen.min_y(),
-                unit * span as f64,
-                screen.size.height,
-            )
+            let start = screen.min_x() + unit * offset as f64;
+            let end = if offset + span == 3 {
+                screen.max_x()
+            } else {
+                screen.min_x() + unit * (offset + span) as f64
+            };
+            Rect::new(start, screen.min_y(), end - start, screen.size.height)
         }
         Orientation::Portrait => {
             let unit = (screen.size.height / 3.0).floor();
-            let y = screen.max_y() - unit * (offset + span) as f64;
-            Rect::new(screen.min_x(), y, screen.size.width, unit * span as f64)
+            let top = screen.max_y() - unit * offset as f64;
+            let bottom = if offset + span == 3 {
+                screen.min_y()
+            } else {
+                screen.max_y() - unit * (offset + span) as f64
+            };
+            Rect::new(screen.min_x(), bottom, screen.size.width, top - bottom)
         }
     }
 }
@@ -279,12 +282,114 @@ mod tests {
     }
 
     #[test]
+    fn complementary_halves_cover_odd_work_area_exactly() {
+        let odd_screen = Rect::new(10.0, 20.0, 1_001.0, 801.0);
+        let request = |command| LayoutRequest {
+            command,
+            window: window(),
+            screen: odd_screen,
+        };
+        let config = LayoutConfig::default();
+        let left = calculate(request(Command::LeftHalf), &config).rect;
+        let right = calculate(request(Command::RightHalf), &config).rect;
+        let top = calculate(request(Command::TopHalf), &config).rect;
+        let bottom = calculate(request(Command::BottomHalf), &config).rect;
+
+        assert_eq!(left, Rect::new(10.0, 20.0, 500.0, 801.0));
+        assert_eq!(right, Rect::new(510.0, 20.0, 501.0, 801.0));
+        assert_eq!(left.max_x(), right.min_x());
+        assert_eq!(right.max_x(), odd_screen.max_x());
+
+        assert_eq!(top, Rect::new(10.0, 421.0, 1_001.0, 400.0));
+        assert_eq!(bottom, Rect::new(10.0, 20.0, 1_001.0, 401.0));
+        assert_eq!(bottom.max_y(), top.min_y());
+        assert_eq!(top.max_y(), odd_screen.max_y());
+    }
+
+    #[test]
+    fn complementary_splits_cover_non_half_ratios_exactly() {
+        let odd_screen = Rect::new(10.0, 20.0, 1_001.0, 801.0);
+        let request = |command| LayoutRequest {
+            command,
+            window: window(),
+            screen: odd_screen,
+        };
+        let config = LayoutConfig {
+            horizontal_split: 0.37,
+            vertical_split: 0.63,
+            ..LayoutConfig::default()
+        };
+        let left = calculate(request(Command::LeftHalf), &config).rect;
+        let right = calculate(request(Command::RightHalf), &config).rect;
+        let top = calculate(request(Command::TopHalf), &config).rect;
+        let bottom = calculate(request(Command::BottomHalf), &config).rect;
+
+        assert_eq!(left.size.width, 370.0);
+        assert_eq!(right.size.width, 631.0);
+        assert_eq!(left.max_x(), right.min_x());
+        assert_eq!(top.size.height, 504.0);
+        assert_eq!(bottom.size.height, 297.0);
+        assert_eq!(bottom.max_y(), top.min_y());
+    }
+
+    #[test]
     fn corners_use_split_ratios() {
         assert_eq!(rect(Command::TopLeft), Rect::new(10.0, 470.0, 600.0, 450.0));
         assert_eq!(
             rect(Command::BottomRight),
             Rect::new(610.0, 20.0, 600.0, 450.0)
         );
+    }
+
+    #[test]
+    fn corners_tile_odd_work_area_exactly() {
+        let odd_screen = Rect::new(10.0, 20.0, 1_001.0, 801.0);
+        let request = |command| LayoutRequest {
+            command,
+            window: window(),
+            screen: odd_screen,
+        };
+        let config = LayoutConfig::default();
+        let top_left = calculate(request(Command::TopLeft), &config).rect;
+        let top_right = calculate(request(Command::TopRight), &config).rect;
+        let bottom_left = calculate(request(Command::BottomLeft), &config).rect;
+        let bottom_right = calculate(request(Command::BottomRight), &config).rect;
+
+        assert_eq!(top_left, Rect::new(10.0, 421.0, 500.0, 400.0));
+        assert_eq!(top_right, Rect::new(510.0, 421.0, 501.0, 400.0));
+        assert_eq!(bottom_left, Rect::new(10.0, 20.0, 500.0, 401.0));
+        assert_eq!(bottom_right, Rect::new(510.0, 20.0, 501.0, 401.0));
+        assert_eq!(top_left.max_x(), top_right.min_x());
+        assert_eq!(bottom_left.max_x(), bottom_right.min_x());
+        assert_eq!(bottom_left.max_y(), top_left.min_y());
+        assert_eq!(bottom_right.max_y(), top_right.min_y());
+    }
+
+    #[test]
+    fn landscape_thirds_share_edges_and_reach_far_edge() {
+        let odd_screen = Rect::new(10.0, 20.0, 1_001.0, 801.0);
+        let request = |command| LayoutRequest {
+            command,
+            window: window(),
+            screen: odd_screen,
+        };
+        let config = LayoutConfig::default();
+        let first = calculate(request(Command::FirstThird), &config).rect;
+        let center = calculate(request(Command::CenterThird), &config).rect;
+        let last = calculate(request(Command::LastThird), &config).rect;
+        let first_two = calculate(request(Command::FirstTwoThirds), &config).rect;
+        let last_two = calculate(request(Command::LastTwoThirds), &config).rect;
+
+        assert_eq!(first, Rect::new(10.0, 20.0, 333.0, 801.0));
+        assert_eq!(center, Rect::new(343.0, 20.0, 333.0, 801.0));
+        assert_eq!(last, Rect::new(676.0, 20.0, 335.0, 801.0));
+        assert_eq!(first.max_x(), center.min_x());
+        assert_eq!(center.max_x(), last.min_x());
+        assert_eq!(last.max_x(), odd_screen.max_x());
+        assert_eq!(first_two, Rect::new(10.0, 20.0, 666.0, 801.0));
+        assert_eq!(last_two, Rect::new(343.0, 20.0, 668.0, 801.0));
+        assert_eq!(first_two.max_x(), last.min_x());
+        assert_eq!(last_two.max_x(), odd_screen.max_x());
     }
 
     #[test]
@@ -299,6 +404,32 @@ mod tests {
         );
 
         assert_eq!(result.rect, Rect::new(0.0, 800.0, 900.0, 400.0));
+    }
+
+    #[test]
+    fn portrait_thirds_share_edges_and_reach_far_edge() {
+        let odd_screen = Rect::new(10.0, 20.0, 801.0, 1_001.0);
+        let request = |command| LayoutRequest {
+            command,
+            window: window(),
+            screen: odd_screen,
+        };
+        let config = LayoutConfig::default();
+        let first = calculate(request(Command::FirstThird), &config).rect;
+        let center = calculate(request(Command::CenterThird), &config).rect;
+        let last = calculate(request(Command::LastThird), &config).rect;
+        let first_two = calculate(request(Command::FirstTwoThirds), &config).rect;
+        let last_two = calculate(request(Command::LastTwoThirds), &config).rect;
+
+        assert_eq!(first, Rect::new(10.0, 688.0, 801.0, 333.0));
+        assert_eq!(center, Rect::new(10.0, 355.0, 801.0, 333.0));
+        assert_eq!(last, Rect::new(10.0, 20.0, 801.0, 335.0));
+        assert_eq!(center.max_y(), first.min_y());
+        assert_eq!(last.max_y(), center.min_y());
+        assert_eq!(last.min_y(), odd_screen.min_y());
+        assert_eq!(first_two, Rect::new(10.0, 355.0, 801.0, 666.0));
+        assert_eq!(last_two, Rect::new(10.0, 20.0, 801.0, 668.0));
+        assert_eq!(last_two.min_y(), odd_screen.min_y());
     }
 
     fn resize(command: Command, window: Rect) -> Rect {
