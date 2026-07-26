@@ -36,6 +36,44 @@ Invalid individual values fall back to their defaults with a warning on
 stderr; an unparseable file falls back to full defaults with an error naming
 the file and problem.
 
+### Default hotkeys
+
+macOS keeps the compact Control+Option namespace. Windows keeps directional
+commands on arrow keys and assigns commands that previously used letters or
+digits to function keys. This avoids consuming AltGr character input and does
+not rely on Windows-key shortcuts reserved by the operating system. Center
+Half is available from the tray menu but is unbound by default.
+
+| Command | macOS | Windows |
+| --- | --- | --- |
+| Left Half | `Control+Alt+ArrowLeft` | `Control+Alt+ArrowLeft` |
+| Right Half | `Control+Alt+ArrowRight` | `Control+Alt+ArrowRight` |
+| Top Half | `Control+Alt+ArrowUp` | `Control+Alt+ArrowUp` |
+| Bottom Half | `Control+Alt+ArrowDown` | `Control+Alt+ArrowDown` |
+| Top Left | `Control+Alt+U` | `Control+Shift+F1` |
+| Top Right | `Control+Alt+I` | `Control+Shift+F2` |
+| Bottom Left | `Control+Alt+J` | `Control+Shift+F3` |
+| Bottom Right | `Control+Alt+K` | `Control+Shift+F4` |
+| First Third | `Control+Alt+Digit1` | `Control+Shift+F5` |
+| Center Third | `Control+Alt+Digit2` | `Control+Shift+F6` |
+| Last Third | `Control+Alt+Digit3` | `Control+Shift+F7` |
+| First Two Thirds | `Control+Alt+Digit4` | `Control+Shift+F8` |
+| Center Two Thirds | `Control+Alt+Digit5` | `Control+Shift+F9` |
+| Last Two Thirds | `Control+Alt+Digit6` | `Control+Shift+F10` |
+| Maximize | `Control+Alt+Enter` | `Control+Alt+Enter` |
+| Almost Maximize | `Control+Alt+A` | `Control+Shift+F11` |
+| Maximize Height | `Control+Alt+H` | `Control+Alt+Shift+F1` |
+| Center | `Control+Alt+C` | `Control+Alt+Shift+F2` |
+| Restore | `Control+Alt+Backspace` | `Control+Alt+Backspace` |
+| Move Left | `Control+Alt+Shift+ArrowLeft` | `Control+Alt+Shift+ArrowLeft` |
+| Move Right | `Control+Alt+Shift+ArrowRight` | `Control+Alt+Shift+ArrowRight` |
+| Move Up | `Control+Alt+Shift+ArrowUp` | `Control+Alt+Shift+ArrowUp` |
+| Move Down | `Control+Alt+Shift+ArrowDown` | `Control+Alt+Shift+ArrowDown` |
+| Grow | `Control+Alt+Equal` | `Control+Alt+Shift+F3` |
+| Shrink | `Control+Alt+Minus` | `Control+Alt+Shift+F4` |
+
+Configuration overrides use these same accelerator names on either platform.
+
 ## Window-management failures
 
 Transient desktop states—no focused window, no saved restore rectangle, or an

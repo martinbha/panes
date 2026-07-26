@@ -472,6 +472,14 @@ mod tests {
             .map(|binding| binding.accelerator.as_str())
     }
 
+    fn default_accelerator(command: Command) -> String {
+        default_hotkey_bindings()
+            .into_iter()
+            .find(|binding| binding.command == command)
+            .expect("test command should have a default hotkey")
+            .accelerator
+    }
+
     #[test]
     fn empty_source_produces_defaults() {
         let (config, issues) = parsed("");
@@ -544,9 +552,10 @@ mod tests {
             accelerator_for(&config, Command::Maximize),
             Some("Control+Shift+M")
         );
+        let default_left = default_accelerator(Command::LeftHalf);
         assert_eq!(
             accelerator_for(&config, Command::LeftHalf),
-            Some("Control+Alt+ArrowLeft")
+            Some(default_left.as_str())
         );
         assert_eq!(
             menu_accelerator_for(&config, Command::Maximize),
@@ -583,13 +592,14 @@ mod tests {
                 && accelerator == "Control+NotAKey"
                 && message.contains("NotAKey")
         ));
+        let default = default_accelerator(Command::Maximize);
         assert_eq!(
             accelerator_for(&config, Command::Maximize),
-            Some("Control+Alt+Enter")
+            Some(default.as_str())
         );
         assert_eq!(
             menu_accelerator_for(&config, Command::Maximize),
-            Some("Control+Alt+Enter")
+            Some(default.as_str())
         );
     }
 
@@ -691,40 +701,48 @@ mod tests {
 
     #[test]
     fn duplicate_accelerators_keep_the_first_command() {
-        let (config, issues) = parsed("[hotkeys]\nmaximize = \"Control+Alt+C\"\n");
+        let center_accelerator = default_accelerator(Command::Center);
+        let (config, issues) = parsed(&format!("[hotkeys]\nmaximize = \"{center_accelerator}\"\n"));
 
-        // Control+Alt+C is also the default for Center; Maximize precedes it
-        // in Command::ALL order, so Maximize keeps the accelerator.
+        // Maximize precedes Center in Command::ALL order, so it keeps the
+        // accelerator that Center otherwise receives by default.
         assert_eq!(
             issues,
             [ConfigIssue::DuplicateAccelerator {
-                accelerator: "Control+Alt+C".to_owned(),
+                accelerator: center_accelerator.clone(),
                 kept: Command::Maximize,
                 dropped: Command::Center,
             }]
         );
         assert_eq!(
             accelerator_for(&config, Command::Maximize),
-            Some("Control+Alt+C")
+            Some(center_accelerator.as_str())
         );
         assert_eq!(accelerator_for(&config, Command::Center), None);
     }
 
     #[test]
     fn canonical_duplicate_accelerators_keep_the_first_command() {
-        let (config, issues) = parsed("[hotkeys]\nmaximize = \"alt+control+c\"\n");
+        let (override_accelerator, canonical_accelerator) = if cfg!(target_os = "windows") {
+            ("shift+alt+control+f2", "Control+Alt+Shift+F2")
+        } else {
+            ("alt+control+c", "Control+Alt+C")
+        };
+        let (config, issues) = parsed(&format!(
+            "[hotkeys]\nmaximize = \"{override_accelerator}\"\n"
+        ));
 
         assert_eq!(
             issues,
             [ConfigIssue::DuplicateAccelerator {
-                accelerator: "Control+Alt+C".to_owned(),
+                accelerator: canonical_accelerator.to_owned(),
                 kept: Command::Maximize,
                 dropped: Command::Center,
             }]
         );
         assert_eq!(
             accelerator_for(&config, Command::Maximize),
-            Some("alt+control+c")
+            Some(override_accelerator)
         );
         assert_eq!(accelerator_for(&config, Command::Center), None);
     }

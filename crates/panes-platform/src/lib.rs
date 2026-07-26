@@ -55,6 +55,23 @@ pub struct HotkeyBinding {
     pub accelerator: String,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum HotkeyPlatform {
+    MacOs,
+    Windows,
+}
+
+impl HotkeyPlatform {
+    #[must_use]
+    pub const fn current() -> Self {
+        if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::MacOs
+        }
+    }
+}
+
 /// Maximum number of key presses retained while the native event loop is busy.
 pub const MAX_PENDING_HOTKEY_PRESSES: usize = 1_024;
 
@@ -170,44 +187,124 @@ pub fn default_menu_entries() -> Vec<MenuEntry> {
 
 #[must_use]
 pub fn default_hotkey_bindings() -> Vec<HotkeyBinding> {
+    default_hotkey_bindings_for(HotkeyPlatform::current())
+}
+
+#[must_use]
+pub fn default_hotkey_bindings_for(platform: HotkeyPlatform) -> Vec<HotkeyBinding> {
+    // Windows reserves shortcuts that use the Windows key, while Control+Alt
+    // letter and digit chords collide with AltGr input. Keep directional
+    // commands on arrows and place character-key commands on function keys.
     [
-        (Command::LeftHalf, "Control+Alt+ArrowLeft"),
-        (Command::RightHalf, "Control+Alt+ArrowRight"),
-        (Command::TopHalf, "Control+Alt+ArrowUp"),
-        (Command::BottomHalf, "Control+Alt+ArrowDown"),
-        (Command::TopLeft, "Control+Alt+U"),
-        (Command::TopRight, "Control+Alt+I"),
-        (Command::BottomLeft, "Control+Alt+J"),
-        (Command::BottomRight, "Control+Alt+K"),
-        (Command::FirstThird, "Control+Alt+Digit1"),
-        (Command::CenterThird, "Control+Alt+Digit2"),
-        (Command::LastThird, "Control+Alt+Digit3"),
-        (Command::FirstTwoThirds, "Control+Alt+Digit4"),
-        (Command::CenterTwoThirds, "Control+Alt+Digit5"),
-        (Command::LastTwoThirds, "Control+Alt+Digit6"),
-        (Command::Maximize, "Control+Alt+Enter"),
-        (Command::AlmostMaximize, "Control+Alt+A"),
-        (Command::MaximizeHeight, "Control+Alt+H"),
-        (Command::Center, "Control+Alt+C"),
-        (Command::Restore, "Control+Alt+Backspace"),
-        (Command::MoveLeft, "Control+Alt+Shift+ArrowLeft"),
-        (Command::MoveRight, "Control+Alt+Shift+ArrowRight"),
-        (Command::MoveUp, "Control+Alt+Shift+ArrowUp"),
-        (Command::MoveDown, "Control+Alt+Shift+ArrowDown"),
-        (Command::Grow, "Control+Alt+Equal"),
-        (Command::Shrink, "Control+Alt+Minus"),
+        (
+            Command::LeftHalf,
+            "Control+Alt+ArrowLeft",
+            "Control+Alt+ArrowLeft",
+        ),
+        (
+            Command::RightHalf,
+            "Control+Alt+ArrowRight",
+            "Control+Alt+ArrowRight",
+        ),
+        (
+            Command::TopHalf,
+            "Control+Alt+ArrowUp",
+            "Control+Alt+ArrowUp",
+        ),
+        (
+            Command::BottomHalf,
+            "Control+Alt+ArrowDown",
+            "Control+Alt+ArrowDown",
+        ),
+        (Command::TopLeft, "Control+Alt+U", "Control+Shift+F1"),
+        (Command::TopRight, "Control+Alt+I", "Control+Shift+F2"),
+        (Command::BottomLeft, "Control+Alt+J", "Control+Shift+F3"),
+        (Command::BottomRight, "Control+Alt+K", "Control+Shift+F4"),
+        (
+            Command::FirstThird,
+            "Control+Alt+Digit1",
+            "Control+Shift+F5",
+        ),
+        (
+            Command::CenterThird,
+            "Control+Alt+Digit2",
+            "Control+Shift+F6",
+        ),
+        (Command::LastThird, "Control+Alt+Digit3", "Control+Shift+F7"),
+        (
+            Command::FirstTwoThirds,
+            "Control+Alt+Digit4",
+            "Control+Shift+F8",
+        ),
+        (
+            Command::CenterTwoThirds,
+            "Control+Alt+Digit5",
+            "Control+Shift+F9",
+        ),
+        (
+            Command::LastTwoThirds,
+            "Control+Alt+Digit6",
+            "Control+Shift+F10",
+        ),
+        (Command::Maximize, "Control+Alt+Enter", "Control+Alt+Enter"),
+        (
+            Command::AlmostMaximize,
+            "Control+Alt+A",
+            "Control+Shift+F11",
+        ),
+        (
+            Command::MaximizeHeight,
+            "Control+Alt+H",
+            "Control+Alt+Shift+F1",
+        ),
+        (Command::Center, "Control+Alt+C", "Control+Alt+Shift+F2"),
+        (
+            Command::Restore,
+            "Control+Alt+Backspace",
+            "Control+Alt+Backspace",
+        ),
+        (
+            Command::MoveLeft,
+            "Control+Alt+Shift+ArrowLeft",
+            "Control+Alt+Shift+ArrowLeft",
+        ),
+        (
+            Command::MoveRight,
+            "Control+Alt+Shift+ArrowRight",
+            "Control+Alt+Shift+ArrowRight",
+        ),
+        (
+            Command::MoveUp,
+            "Control+Alt+Shift+ArrowUp",
+            "Control+Alt+Shift+ArrowUp",
+        ),
+        (
+            Command::MoveDown,
+            "Control+Alt+Shift+ArrowDown",
+            "Control+Alt+Shift+ArrowDown",
+        ),
+        (Command::Grow, "Control+Alt+Equal", "Control+Alt+Shift+F3"),
+        (Command::Shrink, "Control+Alt+Minus", "Control+Alt+Shift+F4"),
     ]
     .into_iter()
-    .map(|(command, accelerator)| HotkeyBinding {
-        command,
-        accelerator: accelerator.to_owned(),
-    })
+    .map(
+        |(command, macos_accelerator, windows_accelerator)| HotkeyBinding {
+            command,
+            accelerator: match platform {
+                HotkeyPlatform::MacOs => macos_accelerator,
+                HotkeyPlatform::Windows => windows_accelerator,
+            }
+            .to_owned(),
+        },
+    )
     .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+
+    use global_hotkey::hotkey::HotKey;
 
     use super::*;
 
@@ -231,41 +328,96 @@ mod tests {
 
     #[test]
     fn hotkey_bindings_bind_each_command_at_most_once() {
-        let bindings = default_hotkey_bindings();
+        for platform in [HotkeyPlatform::MacOs, HotkeyPlatform::Windows] {
+            let bindings = default_hotkey_bindings_for(platform);
 
-        let mut bound = HashSet::new();
-        for binding in &bindings {
-            assert!(
-                bound.insert(binding.command),
-                "{} is bound more than once",
-                binding.command.label()
+            let mut bound = HashSet::new();
+            for binding in &bindings {
+                assert!(
+                    bound.insert(binding.command),
+                    "{} is bound more than once on {platform:?}",
+                    binding.command.label()
+                );
+            }
+
+            let unbound: Vec<Command> = Command::ALL
+                .iter()
+                .copied()
+                .filter(|command| !bound.contains(command))
+                .collect();
+            assert_eq!(
+                unbound,
+                [Command::CenterHalf],
+                "only Center Half should ship without a default hotkey on {platform:?}"
             );
         }
+    }
 
-        let unbound: Vec<Command> = Command::ALL
-            .iter()
-            .copied()
-            .filter(|command| !bound.contains(command))
-            .collect();
+    #[test]
+    fn platform_hotkey_accelerators_parse_and_are_unique() {
+        for platform in [HotkeyPlatform::MacOs, HotkeyPlatform::Windows] {
+            let mut accelerators = HashSet::new();
+            for binding in default_hotkey_bindings_for(platform) {
+                let parsed = binding
+                    .accelerator
+                    .parse::<HotKey>()
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "invalid {platform:?} accelerator {} for {}: {error}",
+                            binding.accelerator,
+                            binding.command.label()
+                        )
+                    });
+                assert!(
+                    accelerators.insert(parsed),
+                    "duplicate accelerator {} for {} on {platform:?}",
+                    binding.accelerator,
+                    binding.command.label()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn macos_defaults_remain_control_alt_bindings() {
+        for binding in default_hotkey_bindings_for(HotkeyPlatform::MacOs) {
+            assert!(binding.accelerator.starts_with("Control+Alt+"));
+        }
         assert_eq!(
-            unbound,
-            [Command::CenterHalf],
-            "only Center Half should ship without a default hotkey"
+            default_hotkey_bindings_for(HotkeyPlatform::MacOs)
+                .into_iter()
+                .find(|binding| binding.command == Command::MoveLeft)
+                .map(|binding| binding.accelerator),
+            Some("Control+Alt+Shift+ArrowLeft".to_owned())
         );
     }
 
     #[test]
-    fn hotkey_accelerators_are_unique() {
-        let bindings = default_hotkey_bindings();
-
-        let mut accelerators = HashSet::new();
-        for binding in &bindings {
-            assert!(
-                accelerators.insert(binding.accelerator.as_str().to_owned()),
-                "duplicate accelerator {} for {}",
-                binding.accelerator,
-                binding.command.label()
-            );
+    fn windows_defaults_avoid_altgr_typing_and_windows_key_shortcuts() {
+        for binding in default_hotkey_bindings_for(HotkeyPlatform::Windows) {
+            assert!(!binding.accelerator.contains("Super"));
+            if matches!(
+                binding.command,
+                Command::TopLeft
+                    | Command::TopRight
+                    | Command::BottomLeft
+                    | Command::BottomRight
+                    | Command::FirstThird
+                    | Command::CenterThird
+                    | Command::LastThird
+                    | Command::FirstTwoThirds
+                    | Command::CenterTwoThirds
+                    | Command::LastTwoThirds
+                    | Command::AlmostMaximize
+                    | Command::MaximizeHeight
+                    | Command::Center
+            ) {
+                assert!(
+                    binding.accelerator.contains("+F"),
+                    "{} should use a function key on Windows",
+                    binding.command.label()
+                );
+            }
         }
     }
 

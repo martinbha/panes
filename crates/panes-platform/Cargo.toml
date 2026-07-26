@@ -10,5 +10,8 @@ repository.workspace = true
 [dependencies]
 panes-core = { path = "../panes-core" }
 
+[dev-dependencies]
+global-hotkey = { version = "0.8.0", default-features = false }
+
 [lints]
 workspace = true

@@ -1278,6 +1278,7 @@ dependencies = [
 name = "panes-platform"
 version = "0.1.0"
 dependencies = [
+ "global-hotkey",
  "panes-core",
 ]
 
