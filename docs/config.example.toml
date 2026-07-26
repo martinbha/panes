@@ -27,6 +27,10 @@ resize-step = 30.0
 # see crates/panes-core/src/command.rs for the full id list. An empty string
 # removes the binding.
 #
+# Windows uses function-key defaults for commands that would otherwise bind
+# Control+Alt letters or digits, avoiding AltGr input. The complete
+# per-platform table is in the README.
+#
 # maximize = "Control+Shift+M"
 # center-half = "Control+Alt+X"
 # restore = ""
