@@ -45,6 +45,7 @@ pub struct WindowInfo {
 pub enum CommandSource {
     Keyboard,
     Menu,
+    Cli,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
