@@ -162,6 +162,16 @@ impl NativePlatform for WindowsPlatform {
                     "minimized Windows windows cannot be moved",
                 ));
             }
+            // A maximized window ignores ordinary sizing. Restore it before
+            // reading constrained dimensions so alignment uses the actual
+            // normal-placement size.
+            // SAFETY: `window` was validated immediately above.
+            if unsafe { IsZoomed(window).as_bool() } {
+                // ShowWindow's return value reports the prior visibility
+                // state, not success.
+                let _ = unsafe { ShowWindow(window, SW_RESTORE) };
+            }
+
             let is_resizable = window_style(window) & WS_THICKFRAME == WS_THICKFRAME;
             let target = if is_resizable {
                 rect
@@ -171,13 +181,6 @@ impl NativePlatform for WindowsPlatform {
                 align_constrained_rect(current, rect, work_area)
             };
             let (x, y, width, height) = native_rect(space.panes_rect_to_native(target))?;
-            // A maximized window ignores ordinary sizing. Restore it first so the requested frame
-            // becomes the normal placement rect instead of an invisible restore target.
-            // SAFETY: `window` was validated immediately above.
-            if unsafe { IsZoomed(window).as_bool() } {
-                // ShowWindow's return value reports the prior visibility state, not success.
-                let _ = unsafe { ShowWindow(window, SW_RESTORE) };
-            }
 
             // SAFETY: `window` is valid and the integer coordinates were range checked above.
             unsafe {
