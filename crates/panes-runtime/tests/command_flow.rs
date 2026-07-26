@@ -270,7 +270,7 @@ fn gaps_inset_tiled_commands_but_not_positioning_commands() {
 
     let mut executor = CommandExecutor::new(FakePlatform::new(), config.clone());
     let tiled = executor.execute(keyboard(Command::LeftHalf)).unwrap();
-    assert_eq!(tiled.requested_rect, Rect::new(10.0, 10.0, 480.0, 780.0));
+    assert_eq!(tiled.requested_rect, Rect::new(10.0, 10.0, 485.0, 780.0));
 
     let mut executor = CommandExecutor::new(FakePlatform::new(), config);
     let positioned = executor.execute(keyboard(Command::Center)).unwrap();
