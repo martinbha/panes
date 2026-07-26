@@ -10,6 +10,7 @@ use std::{
 
 mod accessibility_authorization;
 mod coordinates;
+mod launch_at_login;
 mod screen;
 mod window;
 
@@ -22,9 +23,10 @@ use objc2_app_kit::{NSAlert, NSApplication};
 use objc2_foundation::NSString;
 use panes_core::{Command, CommandCategory, Point, Rect, WindowId};
 use panes_platform::{
-    CommandInvocation, CommandSource, HotkeyBinding, MenuEntry, NativePlatform, PendingHotkeys,
-    PlatformError, PlatformResult, ScreenInfo, WindowInfo, default_hotkey_bindings,
-    default_menu_entries,
+    CommandInvocation, CommandSource, HotkeyBinding, LaunchAtLoginStatus, MenuEntry,
+    NativePlatform, PendingHotkeys, PlatformError, PlatformResult, ScreenInfo, WindowInfo,
+    default_hotkey_bindings, default_menu_entries, reconcile_launch_at_login,
+    toggle_launch_at_login as toggle_launch_at_login_registration,
 };
 use tao::{
     event::{Event, StartCause},
@@ -34,7 +36,7 @@ use tao::{
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{
-        Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+        CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
         accelerator::{Accelerator, CMD_OR_CTRL, Code},
     },
 };
@@ -42,6 +44,7 @@ use tray_icon::{
 const QUIT_MENU_ID: &str = "panes.quit";
 const GUIDE_MENU_ID: &str = "panes.guide";
 const ACCESSIBILITY_MENU_ID: &str = "panes.accessibility";
+const LAUNCH_AT_LOGIN_MENU_ID: &str = "panes.launch-at-login";
 const ACCESSIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct MacOsPlatform {
@@ -93,6 +96,16 @@ impl MacOsPlatform {
         let (text, enabled) = accessibility_menu_item_state(trusted);
         tray.accessibility_item.set_text(text);
         tray.accessibility_item.set_enabled(enabled);
+    }
+
+    fn set_launch_at_login_status(&self, status: LaunchAtLoginStatus) {
+        let Some(tray) = &self.tray else {
+            return;
+        };
+        let (text, enabled, checked) = launch_at_login_menu_item_state(status);
+        tray.launch_at_login_item.set_text(text);
+        tray.launch_at_login_item.set_enabled(enabled);
+        tray.launch_at_login_item.set_checked(checked);
     }
 }
 
@@ -176,8 +189,30 @@ impl NativePlatform for MacOsPlatform {
     }
 
     fn show_tray_menu(&mut self, entries: &[MenuEntry]) -> PlatformResult<()> {
+        let status = self
+            .launch_at_login_status()
+            .unwrap_or(LaunchAtLoginStatus::Unavailable);
+        self.show_tray_menu_with_launch_status(entries, status)
+    }
+
+    fn launch_at_login_status(&self) -> PlatformResult<LaunchAtLoginStatus> {
+        launch_at_login::status()
+    }
+
+    fn set_launch_at_login(&self, enabled: bool) -> PlatformResult<()> {
+        launch_at_login::set_enabled(enabled)
+    }
+}
+
+impl MacOsPlatform {
+    fn show_tray_menu_with_launch_status(
+        &mut self,
+        entries: &[MenuEntry],
+        launch_at_login_status: LaunchAtLoginStatus,
+    ) -> PlatformResult<()> {
         let trusted = accessibility_authorization::is_trusted();
-        let (menu, command_by_menu_id, accessibility_item) = build_tray_menu(entries, trusted)?;
+        let (menu, command_by_menu_id, accessibility_item, launch_at_login_item) =
+            build_tray_menu(entries, trusted, launch_at_login_status)?;
         let icon = panes_icon()?;
         let tray_icon = TrayIconBuilder::new()
             .with_tooltip("panes")
@@ -192,12 +227,10 @@ impl NativePlatform for MacOsPlatform {
             _menu: menu,
             command_by_menu_id,
             accessibility_item,
+            launch_at_login_item,
         });
         Ok(())
     }
-}
-
-impl MacOsPlatform {
     fn desktop_snapshot(&self) -> PlatformResult<screen::DesktopSnapshot> {
         if let Some(snapshot) = self.desktop.borrow().clone() {
             return Ok(snapshot);
@@ -213,12 +246,14 @@ pub fn run_keyboard_menu_app() -> ! {
     run_keyboard_menu_app_with_handler(
         default_menu_entries(),
         default_hotkey_bindings(),
+        false,
         |invocation, repeats| {
             println!(
                 "received {:?} command from {:?} (x{repeats})",
                 invocation.command, invocation.source
             );
         },
+        |_| Ok(()),
     )
 }
 
@@ -228,13 +263,16 @@ pub fn run_keyboard_menu_app() -> ! {
 /// are queued and drained in one batch; consecutive identical invocations
 /// collapse into a single call with `repeats > 1` so the handler can apply
 /// one combined frame change instead of replaying the burst.
-pub fn run_keyboard_menu_app_with_handler<F>(
+pub fn run_keyboard_menu_app_with_handler<F, G>(
     menu_entries: Vec<MenuEntry>,
     hotkey_bindings: Vec<HotkeyBinding>,
+    launch_at_login: bool,
     mut handle_command: F,
+    mut persist_launch_at_login: G,
 ) -> !
 where
     F: FnMut(CommandInvocation, usize) + 'static,
+    G: FnMut(bool) -> Result<(), String> + 'static,
 {
     // Run as an accessory app (like LSUIElement): panes never takes focus,
     // so the frontmost application keeps its focused window while the user
@@ -270,8 +308,9 @@ where
 
         match event {
             Event::NewEvents(StartCause::Init) => {
+                let launch_status = reconciled_launch_at_login_status(&platform, launch_at_login);
                 if let Err(error) = platform
-                    .show_tray_menu(&menu_entries)
+                    .show_tray_menu_with_launch_status(&menu_entries, launch_status)
                     .and_then(|()| platform.register_hotkeys(&hotkey_bindings))
                 {
                     eprintln!("panes failed to start native macOS input runtime: {error:?}");
@@ -330,6 +369,11 @@ where
                     return;
                 }
 
+                if event.id() == LAUNCH_AT_LOGIN_MENU_ID {
+                    toggle_launch_at_login(&platform, &mut persist_launch_at_login);
+                    return;
+                }
+
                 if let Some(invocation) = platform.invocation_for_menu_id(event.id()) {
                     handle_command(invocation, 1);
                 }
@@ -355,6 +399,7 @@ struct TrayState {
     _menu: Menu,
     command_by_menu_id: HashMap<String, Command>,
     accessibility_item: MenuItem,
+    launch_at_login_item: CheckMenuItem,
 }
 
 struct RegisteredHotkeys {
@@ -372,7 +417,8 @@ enum UserEvent {
 fn build_tray_menu(
     entries: &[MenuEntry],
     accessibility_trusted: bool,
-) -> PlatformResult<(Menu, HashMap<String, Command>, MenuItem)> {
+    launch_at_login_status: LaunchAtLoginStatus,
+) -> PlatformResult<(Menu, HashMap<String, Command>, MenuItem, CheckMenuItem)> {
     let menu = Menu::new();
     let mut command_by_menu_id = HashMap::with_capacity(entries.len());
 
@@ -387,6 +433,18 @@ fn build_tray_menu(
     menu.append(&accessibility_item).map_err(|error| {
         native_error("failed to append Accessibility permission menu item", error)
     })?;
+
+    let (launch_text, launch_enabled, launch_checked) =
+        launch_at_login_menu_item_state(launch_at_login_status);
+    let launch_at_login_item = CheckMenuItem::with_id(
+        LAUNCH_AT_LOGIN_MENU_ID,
+        launch_text,
+        launch_enabled,
+        launch_checked,
+        None,
+    );
+    menu.append(&launch_at_login_item)
+        .map_err(|error| native_error("failed to append launch-at-login menu item", error))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|error| native_error("failed to append menu separator", error))?;
 
@@ -440,7 +498,12 @@ fn build_tray_menu(
     menu.append(&quit)
         .map_err(|error| native_error("failed to append quit menu item", error))?;
 
-    Ok((menu, command_by_menu_id, accessibility_item))
+    Ok((
+        menu,
+        command_by_menu_id,
+        accessibility_item,
+        launch_at_login_item,
+    ))
 }
 
 fn quit_accelerator() -> Accelerator {
@@ -452,6 +515,51 @@ fn accessibility_menu_item_state(trusted: bool) -> (&'static str, bool) {
         ("Accessibility Permission Granted", false)
     } else {
         ("Grant Accessibility Permission…", true)
+    }
+}
+
+fn launch_at_login_menu_item_state(status: LaunchAtLoginStatus) -> (&'static str, bool, bool) {
+    match status {
+        LaunchAtLoginStatus::Disabled | LaunchAtLoginStatus::Stale => {
+            ("Launch at Login", true, false)
+        }
+        LaunchAtLoginStatus::Enabled => ("Launch at Login", true, true),
+        LaunchAtLoginStatus::RequiresApproval => {
+            ("Launch at Login (Approval Required)", true, true)
+        }
+        LaunchAtLoginStatus::Unavailable => ("Launch at Login (Requires App Bundle)", false, false),
+    }
+}
+
+fn reconciled_launch_at_login_status(
+    platform: &MacOsPlatform,
+    desired: bool,
+) -> LaunchAtLoginStatus {
+    match reconcile_launch_at_login(platform, desired) {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("panes could not reconcile macOS launch at login: {error:?}");
+            platform
+                .launch_at_login_status()
+                .unwrap_or(LaunchAtLoginStatus::Unavailable)
+        }
+    }
+}
+
+fn toggle_launch_at_login(
+    platform: &MacOsPlatform,
+    persist: &mut impl FnMut(bool) -> Result<(), String>,
+) {
+    match toggle_launch_at_login_registration(platform, persist) {
+        Ok(status) => platform.set_launch_at_login_status(status),
+        Err(error) => {
+            eprintln!("panes could not toggle macOS launch at login: {error}");
+            platform.set_launch_at_login_status(
+                platform
+                    .launch_at_login_status()
+                    .unwrap_or(LaunchAtLoginStatus::Unavailable),
+            );
+        }
     }
 }
 
@@ -702,6 +810,26 @@ mod tests {
         assert_eq!(
             accessibility_menu_item_state(true),
             ("Accessibility Permission Granted", false)
+        );
+    }
+
+    #[test]
+    fn launch_at_login_menu_item_reflects_native_status() {
+        assert_eq!(
+            launch_at_login_menu_item_state(LaunchAtLoginStatus::Disabled),
+            ("Launch at Login", true, false)
+        );
+        assert_eq!(
+            launch_at_login_menu_item_state(LaunchAtLoginStatus::Enabled),
+            ("Launch at Login", true, true)
+        );
+        assert_eq!(
+            launch_at_login_menu_item_state(LaunchAtLoginStatus::RequiresApproval),
+            ("Launch at Login (Approval Required)", true, true)
+        );
+        assert_eq!(
+            launch_at_login_menu_item_state(LaunchAtLoginStatus::Unavailable),
+            ("Launch at Login (Requires App Bundle)", false, false)
         );
     }
 

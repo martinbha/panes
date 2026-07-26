@@ -12,8 +12,10 @@ use global_hotkey::{
 };
 use panes_core::{Command, CommandCategory, Point, Rect, WindowId};
 use panes_platform::{
-    CommandInvocation, CommandSource, HotkeyBinding, MenuEntry, NativePlatform, PendingHotkeys,
-    PlatformError, PlatformResult, ScreenId, ScreenInfo, WindowInfo, align_constrained_rect,
+    CommandInvocation, CommandSource, HotkeyBinding, LaunchAtLoginStatus, MenuEntry,
+    NativePlatform, PendingHotkeys, PlatformError, PlatformResult, ScreenId, ScreenInfo,
+    WindowInfo, align_constrained_rect, reconcile_launch_at_login,
+    toggle_launch_at_login as toggle_launch_at_login_registration,
 };
 use tao::{
     event::{Event, StartCause},
@@ -22,7 +24,8 @@ use tao::{
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{
-        Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu, accelerator::Accelerator,
+        CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+        accelerator::Accelerator,
     },
 };
 use windows::{
@@ -54,6 +57,7 @@ use windows::{
 use crate::coordinates::{CoordinateSpace, rect_from_edges, rounded_i32};
 
 const QUIT_MENU_ID: &str = "panes.quit";
+const LAUNCH_AT_LOGIN_MENU_ID: &str = "panes.launch-at-login";
 
 pub struct WindowsPlatform {
     tray: Option<TrayState>,
@@ -94,6 +98,16 @@ impl WindowsPlatform {
                 command,
                 source: CommandSource::Keyboard,
             })
+    }
+
+    fn set_launch_at_login_status(&self, status: LaunchAtLoginStatus) {
+        let Some(tray) = &self.tray else {
+            return;
+        };
+        let (text, enabled, checked) = launch_at_login_menu_item_state(status);
+        tray.launch_at_login_item.set_text(text);
+        tray.launch_at_login_item.set_enabled(enabled);
+        tray.launch_at_login_item.set_checked(checked);
     }
 }
 
@@ -244,7 +258,29 @@ impl NativePlatform for WindowsPlatform {
     }
 
     fn show_tray_menu(&mut self, entries: &[MenuEntry]) -> PlatformResult<()> {
-        let (menu, command_by_menu_id) = build_tray_menu(entries)?;
+        let status = self
+            .launch_at_login_status()
+            .unwrap_or(LaunchAtLoginStatus::Unavailable);
+        self.show_tray_menu_with_launch_status(entries, status)
+    }
+
+    fn launch_at_login_status(&self) -> PlatformResult<LaunchAtLoginStatus> {
+        crate::launch_at_login::status()
+    }
+
+    fn set_launch_at_login(&self, enabled: bool) -> PlatformResult<()> {
+        crate::launch_at_login::set_enabled(enabled)
+    }
+}
+
+impl WindowsPlatform {
+    fn show_tray_menu_with_launch_status(
+        &mut self,
+        entries: &[MenuEntry],
+        launch_at_login_status: LaunchAtLoginStatus,
+    ) -> PlatformResult<()> {
+        let (menu, command_by_menu_id, launch_at_login_item) =
+            build_tray_menu(entries, launch_at_login_status)?;
         let tray_icon = TrayIconBuilder::new()
             .with_tooltip("panes")
             .with_icon(panes_icon()?)
@@ -256,12 +292,11 @@ impl NativePlatform for WindowsPlatform {
             _tray_icon: tray_icon,
             _menu: menu,
             command_by_menu_id,
+            launch_at_login_item,
         });
         Ok(())
     }
-}
 
-impl WindowsPlatform {
     fn coordinate_space(&self) -> PlatformResult<CoordinateSpace> {
         if let Some(space) = *self.coordinate_space.borrow() {
             return Ok(space);
@@ -276,13 +311,16 @@ impl WindowsPlatform {
 /// Runs the Windows tray and global-hotkey message loop without creating an
 /// application window. Each command is forwarded to `handle_command`, with
 /// consecutive queued hotkeys coalesced into one native frame update.
-pub fn run_keyboard_menu_app_with_handler<F>(
+pub fn run_keyboard_menu_app_with_handler<F, G>(
     menu_entries: Vec<MenuEntry>,
     hotkey_bindings: Vec<HotkeyBinding>,
+    launch_at_login: bool,
     mut handle_command: F,
+    mut persist_launch_at_login: G,
 ) -> !
 where
     F: FnMut(CommandInvocation, usize) + 'static,
+    G: FnMut(bool) -> Result<(), String> + 'static,
 {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -311,8 +349,9 @@ where
 
         match event {
             Event::NewEvents(StartCause::Init) => {
+                let launch_status = reconciled_launch_at_login_status(&platform, launch_at_login);
                 if let Err(error) = platform
-                    .show_tray_menu(&menu_entries)
+                    .show_tray_menu_with_launch_status(&menu_entries, launch_status)
                     .and_then(|()| platform.register_hotkeys(&hotkey_bindings))
                 {
                     eprintln!("panes failed to start the Windows input runtime: {error:?}");
@@ -322,6 +361,11 @@ where
             Event::UserEvent(UserEvent::Menu(event)) => {
                 if event.id() == QUIT_MENU_ID {
                     *control_flow = ControlFlow::Exit;
+                    return;
+                }
+
+                if event.id() == LAUNCH_AT_LOGIN_MENU_ID {
+                    toggle_launch_at_login(&platform, &mut persist_launch_at_login);
                     return;
                 }
 
@@ -349,6 +393,7 @@ struct TrayState {
     _tray_icon: TrayIcon,
     _menu: Menu,
     command_by_menu_id: HashMap<String, Command>,
+    launch_at_login_item: CheckMenuItem,
 }
 
 struct RegisteredHotkeys {
@@ -363,9 +408,26 @@ enum UserEvent {
     HotkeysReady,
 }
 
-fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<String, Command>)> {
+fn build_tray_menu(
+    entries: &[MenuEntry],
+    launch_at_login_status: LaunchAtLoginStatus,
+) -> PlatformResult<(Menu, HashMap<String, Command>, CheckMenuItem)> {
     let menu = Menu::new();
     let mut command_by_menu_id = HashMap::with_capacity(entries.len());
+
+    let (launch_text, launch_enabled, launch_checked) =
+        launch_at_login_menu_item_state(launch_at_login_status);
+    let launch_at_login_item = CheckMenuItem::with_id(
+        LAUNCH_AT_LOGIN_MENU_ID,
+        launch_text,
+        launch_enabled,
+        launch_checked,
+        None,
+    );
+    menu.append(&launch_at_login_item)
+        .map_err(|error| native_error("failed to append launch-at-login menu item", error))?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|error| native_error("failed to append menu separator", error))?;
 
     for category in CommandCategory::ALL {
         let submenu = Submenu::new(category.label(), true);
@@ -406,7 +468,52 @@ fn build_tray_menu(entries: &[MenuEntry]) -> PlatformResult<(Menu, HashMap<Strin
     menu.append(&MenuItem::with_id(QUIT_MENU_ID, "Quit Panes", true, None))
         .map_err(|error| native_error("failed to append quit menu item", error))?;
 
-    Ok((menu, command_by_menu_id))
+    Ok((menu, command_by_menu_id, launch_at_login_item))
+}
+
+fn launch_at_login_menu_item_state(status: LaunchAtLoginStatus) -> (&'static str, bool, bool) {
+    match status {
+        LaunchAtLoginStatus::Disabled | LaunchAtLoginStatus::Stale => {
+            ("Launch at Login", true, false)
+        }
+        LaunchAtLoginStatus::Enabled => ("Launch at Login", true, true),
+        LaunchAtLoginStatus::RequiresApproval => {
+            ("Launch at Login (Approval Required)", true, true)
+        }
+        LaunchAtLoginStatus::Unavailable => ("Launch at Login (Unavailable)", false, false),
+    }
+}
+
+fn reconciled_launch_at_login_status(
+    platform: &WindowsPlatform,
+    desired: bool,
+) -> LaunchAtLoginStatus {
+    match reconcile_launch_at_login(platform, desired) {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("panes could not reconcile Windows launch at login: {error:?}");
+            platform
+                .launch_at_login_status()
+                .unwrap_or(LaunchAtLoginStatus::Unavailable)
+        }
+    }
+}
+
+fn toggle_launch_at_login(
+    platform: &WindowsPlatform,
+    persist: &mut impl FnMut(bool) -> Result<(), String>,
+) {
+    match toggle_launch_at_login_registration(platform, persist) {
+        Ok(status) => platform.set_launch_at_login_status(status),
+        Err(error) => {
+            eprintln!("panes could not toggle Windows launch at login: {error}");
+            platform.set_launch_at_login_status(
+                platform
+                    .launch_at_login_status()
+                    .unwrap_or(LaunchAtLoginStatus::Unavailable),
+            );
+        }
+    }
 }
 
 fn parse_hotkey(binding: &HotkeyBinding) -> Result<HotKey, PlatformError> {
@@ -824,6 +931,26 @@ fn enable_per_monitor_dpi_awareness() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_at_login_menu_item_reflects_native_status() {
+        assert_eq!(
+            launch_at_login_menu_item_state(LaunchAtLoginStatus::Disabled),
+            ("Launch at Login", true, false)
+        );
+        assert_eq!(
+            launch_at_login_menu_item_state(LaunchAtLoginStatus::Enabled),
+            ("Launch at Login", true, true)
+        );
+        assert_eq!(
+            launch_at_login_menu_item_state(LaunchAtLoginStatus::Stale),
+            ("Launch at Login", true, false)
+        );
+        assert_eq!(
+            launch_at_login_menu_item_state(LaunchAtLoginStatus::Unavailable),
+            ("Launch at Login (Unavailable)", false, false)
+        );
+    }
 
     #[test]
     fn process_generation_uses_the_current_process_creation_time() {

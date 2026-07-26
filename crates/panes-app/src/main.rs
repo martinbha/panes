@@ -35,6 +35,7 @@ fn main() -> ExitCode {
         AppMode::Resident => {
             let loaded = panes_runtime::config::load();
             report_config_problems(&loaded);
+            let config_path = loaded.path.clone();
 
             let mut executor = panes_runtime::CommandExecutor::new(
                 panes_macos::MacOsPlatform::new(),
@@ -43,11 +44,13 @@ fn main() -> ExitCode {
             panes_macos::run_keyboard_menu_app_with_handler(
                 loaded.config.menu_entries,
                 loaded.config.hotkey_bindings,
+                loaded.config.launch_at_login,
                 move |invocation, repeats| {
                     if let Err(error) = executor.execute_repeated(invocation, repeats) {
                         report_command_failure(invocation, &error);
                     }
                 },
+                move |enabled| persist_launch_at_login(&config_path, enabled),
             );
         }
         AppMode::RuntimeSummary => {
@@ -79,6 +82,7 @@ fn main() -> ExitCode {
         AppMode::Resident => {
             let loaded = panes_runtime::config::load();
             report_config_problems(&loaded);
+            let config_path = loaded.path.clone();
 
             let mut executor = panes_runtime::CommandExecutor::new(
                 panes_windows::WindowsPlatform::new(),
@@ -87,11 +91,13 @@ fn main() -> ExitCode {
             panes_windows::run_keyboard_menu_app_with_handler(
                 loaded.config.menu_entries,
                 loaded.config.hotkey_bindings,
+                loaded.config.launch_at_login,
                 move |invocation, repeats| {
                     if let Err(error) = executor.execute_repeated(invocation, repeats) {
                         report_command_failure(invocation, &error);
                     }
                 },
+                move |enabled| persist_launch_at_login(&config_path, enabled),
             );
         }
         AppMode::RuntimeSummary => {
@@ -234,6 +240,17 @@ fn report_config_problems(loaded: &panes_runtime::config::ConfigLoad) {
     for issue in &loaded.issues {
         eprintln!("panes config warning: {issue}");
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn persist_launch_at_login(
+    config_path: &Option<std::path::PathBuf>,
+    enabled: bool,
+) -> Result<(), String> {
+    let path = config_path
+        .as_deref()
+        .ok_or_else(|| "the platform config directory is unavailable".to_owned())?;
+    panes_runtime::config::save_launch_at_login(path, enabled).map_err(|error| error.to_string())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]

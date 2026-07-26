@@ -1,6 +1,9 @@
 mod coordinates;
 
 #[cfg(target_os = "windows")]
+mod launch_at_login;
+
+#[cfg(target_os = "windows")]
 mod native;
 
 #[cfg(target_os = "windows")]

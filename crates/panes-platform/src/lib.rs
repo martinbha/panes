@@ -68,6 +68,32 @@ pub struct HotkeyBinding {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LaunchAtLoginStatus {
+    Disabled,
+    Enabled,
+    RequiresApproval,
+    Stale,
+    Unavailable,
+}
+
+impl LaunchAtLoginStatus {
+    #[must_use]
+    pub const fn is_configured(self) -> bool {
+        matches!(self, Self::Enabled | Self::RequiresApproval)
+    }
+
+    #[must_use]
+    pub const fn has_registration(self) -> bool {
+        matches!(self, Self::Enabled | Self::RequiresApproval | Self::Stale)
+    }
+
+    #[must_use]
+    pub const fn is_available(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum HotkeyPlatform {
     MacOs,
     Windows,
@@ -182,6 +208,125 @@ pub trait NativePlatform {
     fn register_hotkeys(&mut self, bindings: &[HotkeyBinding]) -> PlatformResult<()>;
 
     fn show_tray_menu(&mut self, entries: &[MenuEntry]) -> PlatformResult<()>;
+
+    fn launch_at_login_status(&self) -> PlatformResult<LaunchAtLoginStatus> {
+        Ok(LaunchAtLoginStatus::Unavailable)
+    }
+
+    fn set_launch_at_login(&self, _enabled: bool) -> PlatformResult<()> {
+        Err(PlatformError::Unsupported(
+            "launch at login is unavailable on this platform",
+        ))
+    }
+}
+
+pub fn reconcile_launch_at_login<P: NativePlatform>(
+    platform: &P,
+    desired: bool,
+) -> PlatformResult<LaunchAtLoginStatus> {
+    let status = platform.launch_at_login_status()?;
+    if !status.is_available() {
+        return Ok(status);
+    }
+
+    let needs_update = if desired {
+        !status.is_configured()
+    } else {
+        status.has_registration()
+    };
+    if needs_update {
+        platform.set_launch_at_login(desired)?;
+        platform.launch_at_login_status()
+    } else {
+        Ok(status)
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum LaunchAtLoginUpdateError {
+    Platform(PlatformError),
+    StateMismatch {
+        desired: bool,
+        actual: LaunchAtLoginStatus,
+    },
+    Persist {
+        message: String,
+        rollback_error: Option<PlatformError>,
+    },
+}
+
+impl std::fmt::Display for LaunchAtLoginUpdateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Platform(error) => write!(formatter, "platform update failed: {error:?}"),
+            Self::StateMismatch { desired, actual } => write!(
+                formatter,
+                "platform reported {actual:?} after launch at login was set to {desired}"
+            ),
+            Self::Persist {
+                message,
+                rollback_error: None,
+            } => write!(
+                formatter,
+                "could not save the preference; the platform update was rolled back: {message}"
+            ),
+            Self::Persist {
+                message,
+                rollback_error: Some(rollback_error),
+            } => write!(
+                formatter,
+                "could not save the preference ({message}) or roll back the platform update: \
+                 {rollback_error:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LaunchAtLoginUpdateError {}
+
+pub fn toggle_launch_at_login<P, F>(
+    platform: &P,
+    persist: &mut F,
+) -> Result<LaunchAtLoginStatus, LaunchAtLoginUpdateError>
+where
+    P: NativePlatform,
+    F: FnMut(bool) -> Result<(), String>,
+{
+    let before = platform
+        .launch_at_login_status()
+        .map_err(LaunchAtLoginUpdateError::Platform)?;
+    if !before.is_available() {
+        return Ok(before);
+    }
+
+    let desired = !before.is_configured();
+    platform
+        .set_launch_at_login(desired)
+        .map_err(LaunchAtLoginUpdateError::Platform)?;
+    let after = platform
+        .launch_at_login_status()
+        .map_err(LaunchAtLoginUpdateError::Platform)?;
+    let reached_desired_state = if desired {
+        after.is_configured()
+    } else {
+        !after.has_registration()
+    };
+    if !reached_desired_state {
+        return Err(LaunchAtLoginUpdateError::StateMismatch {
+            desired,
+            actual: after,
+        });
+    }
+
+    if let Err(message) = persist(desired) {
+        let rollback_error = platform.set_launch_at_login(before.is_configured()).err();
+        return Err(LaunchAtLoginUpdateError::Persist {
+            message,
+            rollback_error,
+        });
+    }
+
+    Ok(after)
 }
 
 /// Preserves a constrained window's actual size while aligning it within a
@@ -376,11 +521,138 @@ pub fn default_hotkey_bindings_for(platform: HotkeyPlatform) -> Vec<HotkeyBindin
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{
+        cell::{Cell, RefCell},
+        collections::HashSet,
+    };
 
     use global_hotkey::hotkey::HotKey;
 
     use super::*;
+
+    struct LoginPlatform {
+        status: Cell<LaunchAtLoginStatus>,
+        updates: RefCell<Vec<bool>>,
+    }
+
+    impl LoginPlatform {
+        fn new(status: LaunchAtLoginStatus) -> Self {
+            Self {
+                status: Cell::new(status),
+                updates: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl NativePlatform for LoginPlatform {
+        fn platform_name(&self) -> &'static str {
+            "test"
+        }
+
+        fn cursor_position(&self) -> PlatformResult<Point> {
+            unreachable!()
+        }
+
+        fn screens(&self) -> PlatformResult<Vec<ScreenInfo>> {
+            unreachable!()
+        }
+
+        fn front_window(&self) -> PlatformResult<Option<WindowInfo>> {
+            unreachable!()
+        }
+
+        fn set_window_rect(&self, _window_id: WindowId, _rect: Rect) -> PlatformResult<Rect> {
+            unreachable!()
+        }
+
+        fn register_hotkeys(&mut self, _bindings: &[HotkeyBinding]) -> PlatformResult<()> {
+            unreachable!()
+        }
+
+        fn show_tray_menu(&mut self, _entries: &[MenuEntry]) -> PlatformResult<()> {
+            unreachable!()
+        }
+
+        fn launch_at_login_status(&self) -> PlatformResult<LaunchAtLoginStatus> {
+            Ok(self.status.get())
+        }
+
+        fn set_launch_at_login(&self, enabled: bool) -> PlatformResult<()> {
+            self.updates.borrow_mut().push(enabled);
+            self.status.set(if enabled {
+                LaunchAtLoginStatus::Enabled
+            } else {
+                LaunchAtLoginStatus::Disabled
+            });
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn login_status_distinguishes_registration_from_availability() {
+        assert!(LaunchAtLoginStatus::Enabled.is_configured());
+        assert!(LaunchAtLoginStatus::RequiresApproval.is_configured());
+        assert!(LaunchAtLoginStatus::Stale.has_registration());
+        assert!(!LaunchAtLoginStatus::Stale.is_configured());
+        assert!(!LaunchAtLoginStatus::Unavailable.is_available());
+    }
+
+    #[test]
+    fn login_reconciliation_repairs_stale_and_missing_registrations() {
+        let stale = LoginPlatform::new(LaunchAtLoginStatus::Stale);
+        assert_eq!(
+            reconcile_launch_at_login(&stale, true),
+            Ok(LaunchAtLoginStatus::Enabled)
+        );
+        assert_eq!(*stale.updates.borrow(), [true]);
+
+        let unwanted = LoginPlatform::new(LaunchAtLoginStatus::Stale);
+        assert_eq!(
+            reconcile_launch_at_login(&unwanted, false),
+            Ok(LaunchAtLoginStatus::Disabled)
+        );
+        assert_eq!(*unwanted.updates.borrow(), [false]);
+
+        let unavailable = LoginPlatform::new(LaunchAtLoginStatus::Unavailable);
+        assert_eq!(
+            reconcile_launch_at_login(&unavailable, true),
+            Ok(LaunchAtLoginStatus::Unavailable)
+        );
+        assert!(unavailable.updates.borrow().is_empty());
+    }
+
+    #[test]
+    fn login_toggle_updates_native_state_and_persists_the_preference() {
+        let platform = LoginPlatform::new(LaunchAtLoginStatus::Disabled);
+        let mut persisted = Vec::new();
+
+        let status = toggle_launch_at_login(&platform, &mut |enabled| {
+            persisted.push(enabled);
+            Ok(())
+        });
+
+        assert_eq!(status, Ok(LaunchAtLoginStatus::Enabled));
+        assert_eq!(*platform.updates.borrow(), [true]);
+        assert_eq!(persisted, [true]);
+    }
+
+    #[test]
+    fn login_toggle_rolls_back_when_persistence_fails() {
+        let platform = LoginPlatform::new(LaunchAtLoginStatus::Disabled);
+
+        let error = toggle_launch_at_login(&platform, &mut |_| Err("disk full".to_owned()))
+            .expect_err("persistence should fail");
+
+        assert_eq!(
+            error,
+            LaunchAtLoginUpdateError::Persist {
+                message: "disk full".to_owned(),
+                rollback_error: None,
+            }
+        );
+        assert_eq!(*platform.updates.borrow(), [true, false]);
+        assert_eq!(platform.status.get(), LaunchAtLoginStatus::Disabled);
+    }
 
     #[test]
     fn menu_entries_cover_every_command_exactly_once() {

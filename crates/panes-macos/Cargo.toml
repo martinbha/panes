@@ -35,6 +35,12 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSString",
     "objc2-core-foundation",
 ] }
+objc2-service-management = { version = "0.3.2", default-features = false, features = [
+    "SMAppService",
+    "objc2",
+    "objc2-foundation",
+    "std",
+] }
 tao = { version = "0.35.3", default-features = false }
 tray-icon = { version = "0.24.1", default-features = false }
 
