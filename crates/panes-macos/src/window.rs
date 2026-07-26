@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
     ffi::c_void,
+    mem::{MaybeUninit, size_of},
     thread,
     time::Duration,
 };
@@ -522,12 +523,7 @@ fn window_info(
             .and_then(|app| app.bundleIdentifier())
             .map(|bundle_id| bundle_id.to_string())
             .unwrap_or_else(|| format!("pid:{pid}")),
-        app_generation: app
-            .as_ref()
-            .and_then(|app| app.launchDate())
-            .map_or(pid as u64, |date| {
-                date.timeIntervalSinceReferenceDate().to_bits()
-            }),
+        app_generation: process_generation(pid),
         title,
         rect: window_rect(window, space)?,
         is_resizable: is_size_settable(window),
@@ -536,6 +532,32 @@ fn window_info(
         is_fullscreen: optional_custom_cf_boolean(window, AX_FULL_SCREEN_ATTRIBUTE)?
             .unwrap_or(false),
     })
+}
+
+fn process_generation(pid: pid_t) -> u64 {
+    let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let expected_size = size_of::<libc::proc_bsdinfo>() as i32;
+    // SAFETY: `info` points to writable storage of exactly the size passed to
+    // proc_pidinfo. The structure is initialized only when the full expected
+    // byte count is returned.
+    let bytes_read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            expected_size,
+        )
+    };
+    if bytes_read != expected_size {
+        return pid as u64;
+    }
+
+    // SAFETY: proc_pidinfo filled the complete proc_bsdinfo structure above.
+    let info = unsafe { info.assume_init() };
+    info.pbi_start_tvsec
+        .saturating_mul(1_000_000)
+        .saturating_add(info.pbi_start_tvusec)
 }
 
 fn is_window(window: &AXUIElement) -> PlatformResult<bool> {
