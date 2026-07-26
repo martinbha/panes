@@ -80,6 +80,31 @@ Half is available from the tray menu but is unbound by default.
 
 Configuration overrides use these same accelerator names on either platform.
 
+## Command line
+
+Run a command once against the currently focused window by its stable command
+id:
+
+```bash
+panes exec left-half
+panes exec --delay 500 top-right
+```
+
+The optional delay is measured in milliseconds and gives you time to focus the
+target window after invoking the command from a terminal. List every supported
+id with:
+
+```bash
+panes exec --list
+```
+
+An `exec` invocation is a separate one-shot process. It reads the normal
+layout configuration, applies one command, and exits nonzero with an error if
+the command id, permission state, focused window, or native operation is
+invalid. It does not share window history with the resident tray process, so
+`restore` and repeated-command cycling require the resident process until a
+future inter-process command channel is added.
+
 ## Window-management failures
 
 Transient desktop states—no focused window, no saved restore rectangle, or an
