@@ -9,6 +9,11 @@
 # default. Unknown keys are rejected with an error naming the key, so typos
 # are caught instead of silently ignored.
 
+[general]
+# Keep Panes running after you sign in. The tray's Launch at Login checkbox
+# updates this preference and the operating-system registration together.
+launch-at-login = false
+
 [layout]
 # Pixels of spacing applied around tiled windows. Must be >= 0.
 gap = 0.0

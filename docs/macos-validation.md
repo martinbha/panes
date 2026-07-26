@@ -92,14 +92,26 @@ Requires at least two displays. Repeat with displays arranged side by side.
 
 ## Gaps and Ratios
 
-Gaps and split ratios currently require code changes (persistent config is #5).
-Validate by running with a modified `LayoutConfig` in a dev build.
+Set gaps and split ratios in the `[layout]` section of the config file, restart
+Panes, and validate the resolved settings.
 
 | Scenario | Expected result | Pass |
 | --- | --- | --- |
 | Gap enabled, Left Half + Right Half | Both windows inset; see limitation on seam width below | ☐ |
 | Gap enabled, Center / Move / Grow | No gap applied to non-tiling commands | ☐ |
 | Custom horizontal split (e.g. 0.6) | Left/right halves and corners use the ratio | ☐ |
+
+## Launch at Login
+
+Run these checks from a bundled `Panes.app` on macOS 13 or later. A bare
+development executable is expected to show the control as unavailable.
+
+| Scenario | Expected result | Pass |
+| --- | --- | --- |
+| Enable from the tray, then sign out and back in | Panes starts and the tray checkbox remains selected | ☐ |
+| Disable from the tray, then sign out and back in | Panes does not start and the checkbox remains clear | ☐ |
+| macOS reports approval required | Tray identifies the approval state; enabling Panes in System Settings activates it | ☐ |
+| Move or replace `Panes.app`, then launch it manually | Saved preference is reconciled without a crash or duplicate item | ☐ |
 
 ## Unsupported Windows
 

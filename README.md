@@ -36,7 +36,7 @@ panes reads an optional TOML config file at startup:
 A missing file means built-in defaults. See
 [docs/config.example.toml](docs/config.example.toml) for all supported keys:
 layout settings (gap, split ratios, almost-maximize size, resize step),
-per-command hotkey overrides, and disabled commands.
+per-command hotkey overrides, disabled commands, and launch at login.
 
 Invalid individual values fall back to their defaults with a warning on
 stderr; an unparseable file falls back to full defaults with an error naming
@@ -79,6 +79,22 @@ Half is available from the tray menu but is unbound by default.
 | Shrink | `Control+Alt+Minus` | `Control+Alt+Shift+F4` |
 
 Configuration overrides use these same accelerator names on either platform.
+
+### Launch at login
+
+Use the tray's **Launch at Login** checkbox to update both the platform login
+registration and `[general].launch-at-login` in the config file. Panes checks
+the operating-system state at startup and repairs a missing or stale
+registration to match the saved preference.
+
+On macOS 13 or later, launch at login uses the bundled app's system service.
+Build and launch `Panes.app`; a bare `cargo run` executable cannot register as
+a login item. If macOS requires approval, the tray identifies that state and
+you can allow Panes in System Settings → General → Login Items.
+
+On Windows, launch at login uses the current user's `Run` registry key. Moving
+the portable executable leaves the old entry stale; launching Panes from its
+new location repairs or removes that entry according to the saved preference.
 
 ## Command line
 

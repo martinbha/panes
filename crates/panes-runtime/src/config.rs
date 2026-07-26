@@ -13,6 +13,9 @@
 //!
 //! [commands]
 //! disabled = ["top-left"]             # hidden from menu and hotkeys
+//!
+//! [general]
+//! launch-at-login = false
 //! ```
 //!
 //! Parse failures fall back to built-in defaults with a hard error; invalid
@@ -31,6 +34,7 @@ use serde::Deserialize;
 /// Fully resolved application configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppConfig {
+    pub launch_at_login: bool,
     pub layout: LayoutConfig,
     pub menu_entries: Vec<MenuEntry>,
     pub hotkey_bindings: Vec<HotkeyBinding>,
@@ -39,6 +43,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            launch_at_login: false,
             layout: LayoutConfig::default(),
             menu_entries: default_menu_entries(),
             hotkey_bindings: default_hotkey_bindings(),
@@ -119,6 +124,7 @@ impl fmt::Display for ConfigIssue {
 pub enum ConfigError {
     Read { path: PathBuf, message: String },
     Parse { path: PathBuf, message: String },
+    Write { path: PathBuf, message: String },
 }
 
 impl fmt::Display for ConfigError {
@@ -129,6 +135,9 @@ impl fmt::Display for ConfigError {
             }
             Self::Parse { path, message } => {
                 write!(formatter, "invalid config {}: {message}", path.display())
+            }
+            Self::Write { path, message } => {
+                write!(formatter, "failed to write {}: {message}", path.display())
             }
         }
     }
@@ -204,6 +213,49 @@ pub fn load_from_path(path: &Path) -> Result<(AppConfig, Vec<ConfigIssue>), Conf
     })
 }
 
+/// Persist the launch-at-login preference while preserving unrelated TOML
+/// sections and comments.
+pub fn save_launch_at_login(path: &Path, enabled: bool) -> Result<(), ConfigError> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(ConfigError::Read {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            });
+        }
+    };
+    let mut document =
+        source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Parse {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            })?;
+    if document.get("general").is_none() {
+        document["general"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let general = document["general"]
+        .as_table_like_mut()
+        .ok_or_else(|| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: "general must be a table".to_owned(),
+        })?;
+    general.insert("launch-at-login", toml_edit::value(enabled));
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| ConfigError::Write {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    }
+    std::fs::write(path, document.to_string()).map_err(|error| ConfigError::Write {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })
+}
+
 /// Parse and resolve config file contents. Returns the resolved config plus
 /// non-fatal issues, or an error message when the TOML itself is invalid.
 pub fn parse(source: &str) -> Result<(AppConfig, Vec<ConfigIssue>), String> {
@@ -215,11 +267,20 @@ pub fn parse(source: &str) -> Result<(AppConfig, Vec<ConfigIssue>), String> {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct ConfigFile {
     #[serde(default)]
+    general: GeneralSection,
+    #[serde(default)]
     layout: LayoutSection,
     #[serde(default)]
     hotkeys: BTreeMap<String, String>,
     #[serde(default)]
     commands: CommandsSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct GeneralSection {
+    #[serde(default)]
+    launch_at_login: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -264,6 +325,7 @@ fn resolve(file: ConfigFile) -> (AppConfig, Vec<ConfigIssue>) {
 
     (
         AppConfig {
+            launch_at_login: file.general.launch_at_login,
             layout,
             menu_entries,
             hotkey_bindings,
@@ -485,6 +547,14 @@ mod tests {
         let (config, issues) = parsed("");
 
         assert_eq!(config, AppConfig::default());
+        assert_eq!(issues, Vec::new());
+    }
+
+    #[test]
+    fn launch_at_login_can_be_enabled_in_general_settings() {
+        let (config, issues) = parsed("[general]\nlaunch-at-login = true\n");
+
+        assert!(config.launch_at_login);
         assert_eq!(issues, Vec::new());
     }
 
@@ -783,6 +853,72 @@ mod tests {
         let (config, issues) = load_from_path(&path).expect("config should load");
 
         assert_eq!(config.layout.gap, 12.0);
+        assert_eq!(issues, Vec::new());
+
+        std::fs::remove_dir_all(&directory).expect("clean up temp dir");
+    }
+
+    #[test]
+    fn launch_at_login_persistence_preserves_existing_config() {
+        let directory = std::env::temp_dir().join(format!(
+            "panes-config-test-save-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).expect("create temp dir");
+        let path = directory.join("config.toml");
+        std::fs::write(
+            &path,
+            "# keep this comment\n[layout]\ngap = 12.0\n\n[general]\nlaunch-at-login = false\n",
+        )
+        .expect("write config");
+
+        save_launch_at_login(&path, true).expect("preference should save");
+        let saved = std::fs::read_to_string(&path).expect("read saved config");
+        let (config, issues) = load_from_path(&path).expect("saved config should load");
+
+        assert!(saved.contains("# keep this comment"));
+        assert!(saved.contains("gap = 12.0"));
+        assert!(config.launch_at_login);
+        assert_eq!(config.layout.gap, 12.0);
+        assert_eq!(issues, Vec::new());
+
+        std::fs::remove_dir_all(&directory).expect("clean up temp dir");
+    }
+
+    #[test]
+    fn launch_at_login_persistence_creates_a_missing_config() {
+        let directory = std::env::temp_dir().join(format!(
+            "panes-config-test-create-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let path = directory.join("nested").join("config.toml");
+
+        save_launch_at_login(&path, true).expect("preference should save");
+        let (config, issues) = load_from_path(&path).expect("saved config should load");
+
+        assert!(config.launch_at_login);
+        assert_eq!(issues, Vec::new());
+
+        std::fs::remove_dir_all(&directory).expect("clean up temp dir");
+    }
+
+    #[test]
+    fn launch_at_login_persistence_supports_an_inline_general_table() {
+        let directory = std::env::temp_dir().join(format!(
+            "panes-config-test-inline-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).expect("create temp dir");
+        let path = directory.join("config.toml");
+        std::fs::write(&path, "general = { launch-at-login = false }\n").expect("write config");
+
+        save_launch_at_login(&path, true).expect("preference should save");
+        let (config, issues) = load_from_path(&path).expect("saved config should load");
+
+        assert!(config.launch_at_login);
         assert_eq!(issues, Vec::new());
 
         std::fs::remove_dir_all(&directory).expect("clean up temp dir");
