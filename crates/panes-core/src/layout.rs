@@ -66,7 +66,7 @@ pub fn calculate(request: LayoutRequest, config: &LayoutConfig) -> LayoutResult 
 
     LayoutResult {
         command: request.command,
-        rect: apply_gap(rect, request.command, config.gap),
+        rect: apply_gap(rect, screen, request.command, config.gap),
     }
 }
 
@@ -209,7 +209,7 @@ fn clamp_dimension(current: f64, delta: f64, available: f64) -> f64 {
     (current + delta).clamp(floor, available)
 }
 
-fn apply_gap(rect: Rect, command: Command, gap: f64) -> Rect {
+fn apply_gap(rect: Rect, screen: Rect, command: Command, gap: f64) -> Rect {
     if gap <= 0.0 {
         return rect;
     }
@@ -224,8 +224,59 @@ fn apply_gap(rect: Rect, command: Command, gap: f64) -> Rect {
         | Command::MoveDown
         | Command::Grow
         | Command::Shrink => rect,
-        _ => rect.inset(gap, gap),
+        _ => {
+            let touched_edges = screen_edges(rect, screen);
+            let interior_gap = gap / 2.0;
+            let left = if touched_edges.contains(Edge::LEFT) {
+                gap
+            } else {
+                interior_gap
+            };
+            let right = if touched_edges.contains(Edge::RIGHT) {
+                gap
+            } else {
+                interior_gap
+            };
+            let top = if touched_edges.contains(Edge::TOP) {
+                gap
+            } else {
+                interior_gap
+            };
+            let bottom = if touched_edges.contains(Edge::BOTTOM) {
+                gap
+            } else {
+                interior_gap
+            };
+
+            Rect::new(
+                rect.min_x() + left,
+                rect.min_y() + bottom,
+                (rect.size.width - left - right).max(0.0),
+                (rect.size.height - bottom - top).max(0.0),
+            )
+        }
     }
+}
+
+fn screen_edges(rect: Rect, screen: Rect) -> Edge {
+    let mut edges = Edge::NONE;
+    if coordinates_match(rect.min_x(), screen.min_x()) {
+        edges = edges.union(Edge::LEFT);
+    }
+    if coordinates_match(rect.max_x(), screen.max_x()) {
+        edges = edges.union(Edge::RIGHT);
+    }
+    if coordinates_match(rect.max_y(), screen.max_y()) {
+        edges = edges.union(Edge::TOP);
+    }
+    if coordinates_match(rect.min_y(), screen.min_y()) {
+        edges = edges.union(Edge::BOTTOM);
+    }
+    edges
+}
+
+fn coordinates_match(left: f64, right: f64) -> bool {
+    (left - right).abs() < 0.1
 }
 
 #[cfg(test)]
@@ -503,5 +554,104 @@ mod tests {
         );
 
         assert_eq!(result.rect, Rect::new(20.0, 30.0, 1180.0, 880.0));
+    }
+
+    #[test]
+    fn half_gaps_are_uniform_on_odd_work_area() {
+        let odd_screen = Rect::new(0.0, 0.0, 1_001.0, 801.0);
+        let config = LayoutConfig {
+            gap: 10.0,
+            ..LayoutConfig::default()
+        };
+        let request = |command| LayoutRequest {
+            command,
+            window: window(),
+            screen: odd_screen,
+        };
+        let left = calculate(request(Command::LeftHalf), &config).rect;
+        let right = calculate(request(Command::RightHalf), &config).rect;
+        let top = calculate(request(Command::TopHalf), &config).rect;
+        let bottom = calculate(request(Command::BottomHalf), &config).rect;
+
+        assert_eq!(left, Rect::new(10.0, 10.0, 485.0, 781.0));
+        assert_eq!(right, Rect::new(505.0, 10.0, 486.0, 781.0));
+        assert_eq!(right.min_x() - left.max_x(), 10.0);
+        assert_eq!(left.min_x() - odd_screen.min_x(), 10.0);
+        assert_eq!(odd_screen.max_x() - right.max_x(), 10.0);
+
+        assert_eq!(top.min_y() - bottom.max_y(), 10.0);
+        assert_eq!(bottom.min_y() - odd_screen.min_y(), 10.0);
+        assert_eq!(odd_screen.max_y() - top.max_y(), 10.0);
+    }
+
+    #[test]
+    fn corner_gaps_are_uniform_on_odd_work_area() {
+        let odd_screen = Rect::new(0.0, 0.0, 1_001.0, 801.0);
+        let config = LayoutConfig {
+            gap: 10.0,
+            ..LayoutConfig::default()
+        };
+        let request = |command| LayoutRequest {
+            command,
+            window: window(),
+            screen: odd_screen,
+        };
+        let top_left = calculate(request(Command::TopLeft), &config).rect;
+        let top_right = calculate(request(Command::TopRight), &config).rect;
+        let bottom_left = calculate(request(Command::BottomLeft), &config).rect;
+        let bottom_right = calculate(request(Command::BottomRight), &config).rect;
+
+        assert_eq!(top_right.min_x() - top_left.max_x(), 10.0);
+        assert_eq!(bottom_right.min_x() - bottom_left.max_x(), 10.0);
+        assert_eq!(top_left.min_y() - bottom_left.max_y(), 10.0);
+        assert_eq!(top_right.min_y() - bottom_right.max_y(), 10.0);
+        assert_eq!(top_left.min_x() - odd_screen.min_x(), 10.0);
+        assert_eq!(odd_screen.max_x() - top_right.max_x(), 10.0);
+        assert_eq!(bottom_left.min_y() - odd_screen.min_y(), 10.0);
+        assert_eq!(odd_screen.max_y() - top_left.max_y(), 10.0);
+    }
+
+    #[test]
+    fn third_gaps_are_uniform_on_odd_work_area() {
+        let odd_screen = Rect::new(0.0, 0.0, 1_001.0, 801.0);
+        let config = LayoutConfig {
+            gap: 10.0,
+            ..LayoutConfig::default()
+        };
+        let request = |command| LayoutRequest {
+            command,
+            window: window(),
+            screen: odd_screen,
+        };
+        let first = calculate(request(Command::FirstThird), &config).rect;
+        let center = calculate(request(Command::CenterThird), &config).rect;
+        let last = calculate(request(Command::LastThird), &config).rect;
+
+        assert_eq!(center.min_x() - first.max_x(), 10.0);
+        assert_eq!(last.min_x() - center.max_x(), 10.0);
+        assert_eq!(first.min_x() - odd_screen.min_x(), 10.0);
+        assert_eq!(odd_screen.max_x() - last.max_x(), 10.0);
+        assert_eq!(first.min_y() - odd_screen.min_y(), 10.0);
+        assert_eq!(odd_screen.max_y() - first.max_y(), 10.0);
+    }
+
+    #[test]
+    fn zero_gap_leaves_every_command_unchanged() {
+        let zero_gap = LayoutConfig {
+            gap: 0.0,
+            ..LayoutConfig::default()
+        };
+        for command in Command::ALL {
+            let request = LayoutRequest {
+                command: *command,
+                window: window(),
+                screen: screen(),
+            };
+
+            assert_eq!(
+                calculate(request, &zero_gap),
+                calculate(request, &LayoutConfig::default())
+            );
+        }
     }
 }
