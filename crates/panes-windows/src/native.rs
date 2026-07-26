@@ -763,3 +763,15 @@ fn enable_per_monitor_dpi_awareness() {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_generation_uses_the_current_process_creation_time() {
+        let process_id = std::process::id();
+
+        assert_ne!(process_generation(process_id), u64::from(process_id));
+    }
+}

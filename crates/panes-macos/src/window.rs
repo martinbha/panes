@@ -807,6 +807,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn process_generation_uses_the_current_process_start_time() {
+        let pid = std::process::id() as pid_t;
+
+        assert_ne!(process_generation(pid), pid as u64);
+    }
+
+    #[test]
     fn native_rects_resolve_to_the_display_with_the_largest_overlap() {
         let frames = [
             Rect::new(0.0, 0.0, 1000.0, 800.0),
