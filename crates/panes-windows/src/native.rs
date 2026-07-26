@@ -27,11 +27,12 @@ use tray_icon::{
 };
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, POINT, RECT},
+        Foundation::{CloseHandle, FILETIME, HWND, LPARAM, POINT, RECT},
         Graphics::Gdi::{
             EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST,
             MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
         },
+        System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
         UI::{
             HiDpi::{
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
@@ -611,6 +612,7 @@ fn window_info(window: HWND, space: CoordinateSpace) -> PlatformResult<WindowInf
     Ok(WindowInfo {
         id: WindowId(window.0 as usize as u64),
         app_id: format!("pid:{process_id}"),
+        app_generation: process_generation(process_id),
         title: window_title(window),
         rect: window_rect(window, space)?,
         is_resizable: style & WS_THICKFRAME == WS_THICKFRAME,
@@ -619,6 +621,29 @@ fn window_info(window: HWND, space: CoordinateSpace) -> PlatformResult<WindowInf
         is_minimized: unsafe { IsIconic(window).as_bool() },
         is_hidden: !unsafe { IsWindowVisible(window).as_bool() },
         is_fullscreen: is_fullscreen_window(window),
+    })
+}
+
+fn process_generation(process_id: u32) -> u64 {
+    // Creation time distinguishes separate lifetimes when Windows reuses a
+    // process id. Protected processes may deny even limited query access; the
+    // pid remains the best available fallback in that case.
+    let Ok(process) =
+        (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) })
+    else {
+        return u64::from(process_id);
+    };
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    let result =
+        unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) };
+    // SAFETY: `process` is an owned handle returned by OpenProcess above.
+    let _ = unsafe { CloseHandle(process) };
+
+    result.map_or(u64::from(process_id), |()| {
+        (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime)
     })
 }
 
@@ -737,4 +762,16 @@ fn enable_per_monitor_dpi_awareness() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_generation_uses_the_current_process_creation_time() {
+        let process_id = std::process::id();
+
+        assert_ne!(process_generation(process_id), u64::from(process_id));
+    }
 }
