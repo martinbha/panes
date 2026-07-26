@@ -1264,6 +1264,7 @@ dependencies = [
  "core-foundation",
  "core-graphics 0.24.0",
  "global-hotkey",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
