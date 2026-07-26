@@ -1,3 +1,12 @@
+//! Contracts shared by the runtime and native platform adapters.
+//!
+//! All [`Point`] and [`Rect`] values crossing this boundary use the panes
+//! logical desktop coordinate system: the primary display's lower-left corner
+//! is the origin, x increases rightward, and y increases upward. A
+//! [`NativePlatform`] implementation must convert positions, screen frames,
+//! work areas, and window rectangles from native coordinates on reads and
+//! convert requested window rectangles back to native coordinates on writes.
+
 use std::collections::{HashMap, VecDeque};
 
 use panes_core::{Command, Point, Rect, WindowId};
@@ -5,6 +14,7 @@ use panes_core::{Command, Point, Rect, WindowId};
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct ScreenId(pub u64);
 
+/// A native display expressed entirely in panes coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScreenInfo {
     pub id: ScreenId,
@@ -13,6 +23,7 @@ pub struct ScreenInfo {
     pub work_area: Rect,
 }
 
+/// A native window snapshot whose [`Self::rect`] is in panes coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowInfo {
     pub id: WindowId,
@@ -148,6 +159,11 @@ pub enum PlatformError {
 
 pub type PlatformResult<T> = Result<T, PlatformError>;
 
+/// Native desktop operations used by the platform-neutral runtime.
+///
+/// Every [`Point`] and [`Rect`] returned or accepted by this trait is in panes
+/// coordinates, never raw platform coordinates. Implementations own both
+/// directions of native conversion.
 pub trait NativePlatform {
     fn platform_name(&self) -> &'static str;
 
