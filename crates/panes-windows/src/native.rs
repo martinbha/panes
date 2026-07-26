@@ -13,7 +13,7 @@ use global_hotkey::{
 use panes_core::{Command, CommandCategory, Point, Rect, WindowId};
 use panes_platform::{
     CommandInvocation, CommandSource, HotkeyBinding, MenuEntry, NativePlatform, PendingHotkeys,
-    PlatformError, PlatformResult, ScreenId, ScreenInfo, WindowInfo,
+    PlatformError, PlatformResult, ScreenId, ScreenInfo, WindowInfo, align_constrained_rect,
 };
 use tao::{
     event::{Event, StartCause},
@@ -30,7 +30,7 @@ use windows::{
         Foundation::{CloseHandle, FILETIME, HWND, LPARAM, POINT, RECT},
         Graphics::Gdi::{
             EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST,
-            MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
+            MONITORINFO, MONITORINFOEXW, MonitorFromRect, MonitorFromWindow,
         },
         System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
         UI::{
@@ -43,8 +43,8 @@ use windows::{
                 GetShellWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
                 GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
                 IsZoomed, MONITORINFOF_PRIMARY, SW_RESTORE, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
-                SWP_NOZORDER, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CHILD,
-                WS_EX_TOOLWINDOW, WS_THICKFRAME,
+                SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE,
+                WS_CHILD, WS_EX_TOOLWINDOW, WS_THICKFRAME,
             },
         },
     },
@@ -162,20 +162,25 @@ impl NativePlatform for WindowsPlatform {
                     "minimized Windows windows cannot be moved",
                 ));
             }
-            if window_style(window) & WS_THICKFRAME != WS_THICKFRAME {
-                return Err(PlatformError::Unsupported(
-                    "non-resizable Windows windows cannot be moved",
-                ));
-            }
-
-            let (x, y, width, height) = native_rect(space.panes_rect_to_native(rect))?;
-            // A maximized window ignores ordinary sizing. Restore it first so the requested frame
-            // becomes the normal placement rect instead of an invisible restore target.
+            // A maximized window ignores ordinary sizing. Restore it before
+            // reading constrained dimensions so alignment uses the actual
+            // normal-placement size.
             // SAFETY: `window` was validated immediately above.
             if unsafe { IsZoomed(window).as_bool() } {
-                // ShowWindow's return value reports the prior visibility state, not success.
+                // ShowWindow's return value reports the prior visibility
+                // state, not success.
                 let _ = unsafe { ShowWindow(window, SW_RESTORE) };
             }
+
+            let is_resizable = window_style(window) & WS_THICKFRAME == WS_THICKFRAME;
+            let target = if is_resizable {
+                rect
+            } else {
+                let current = window_rect(window, space)?;
+                let work_area = destination_work_area(space, rect)?;
+                align_constrained_rect(current, rect, work_area)
+            };
+            let (x, y, width, height) = native_rect(space.panes_rect_to_native(target))?;
 
             // SAFETY: `window` is valid and the integer coordinates were range checked above.
             unsafe {
@@ -186,7 +191,14 @@ impl NativePlatform for WindowsPlatform {
                     y,
                     width,
                     height,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
+                    SWP_NOACTIVATE
+                        | SWP_NOOWNERZORDER
+                        | SWP_NOZORDER
+                        | if is_resizable {
+                            Default::default()
+                        } else {
+                            SWP_NOSIZE
+                        },
                 )
             }
             .map_err(|error| native_error("failed to move or resize Windows window", error))?;
@@ -546,6 +558,51 @@ fn coordinate_space_for(screens: &[NativeScreenInfo]) -> PlatformResult<Coordina
         .ok_or(PlatformError::NotFound("Windows primary monitor not found"))?;
 
     Ok(CoordinateSpace::from_primary_frame(primary.frame))
+}
+
+fn destination_work_area(space: CoordinateSpace, rect: Rect) -> PlatformResult<Rect> {
+    let (x, y, width, height) = native_rect(space.panes_rect_to_native(rect))?;
+    let right = x
+        .checked_add(width)
+        .ok_or_else(native_coordinate_overflow)?;
+    let bottom = y
+        .checked_add(height)
+        .ok_or_else(native_coordinate_overflow)?;
+    let native_target = RECT {
+        left: x,
+        top: y,
+        right,
+        bottom,
+    };
+    // SAFETY: `native_target` remains valid for the duration of this read-only
+    // monitor lookup.
+    let monitor = unsafe { MonitorFromRect(&raw const native_target, MONITOR_DEFAULTTONEAREST) };
+    if monitor.0.is_null() {
+        return Err(PlatformError::NotFound(
+            "Windows destination monitor not found",
+        ));
+    }
+
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..MONITORINFO::default()
+    };
+    // SAFETY: `info` has the required cbSize and writable storage for the
+    // monitor returned immediately above.
+    if !unsafe { GetMonitorInfoW(monitor, &raw mut info).as_bool() } {
+        return Err(native_error(
+            "failed to read Windows destination monitor",
+            windows::core::Error::from_win32(),
+        ));
+    }
+
+    Ok(space.native_rect_to_panes(rect_from_win32(info.rcWork)))
+}
+
+fn native_coordinate_overflow() -> PlatformError {
+    PlatformError::Native(
+        "Windows window rectangle is outside the native coordinate range".to_owned(),
+    )
 }
 
 unsafe extern "system" fn collect_monitor(

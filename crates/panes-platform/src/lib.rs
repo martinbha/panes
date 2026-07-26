@@ -167,6 +167,63 @@ pub trait NativePlatform {
     fn show_tray_menu(&mut self, entries: &[MenuEntry]) -> PlatformResult<()>;
 }
 
+/// Preserves a constrained window's actual size while aligning it within a
+/// requested layout zone and the destination work area.
+#[must_use]
+pub fn align_constrained_rect(actual: Rect, zone: Rect, work_area: Rect) -> Rect {
+    Rect::new(
+        aligned_axis_origin(
+            actual.size.width,
+            zone.min_x(),
+            zone.size.width,
+            work_area.min_x(),
+            work_area.size.width,
+        ),
+        aligned_axis_origin(
+            actual.size.height,
+            zone.min_y(),
+            zone.size.height,
+            work_area.min_y(),
+            work_area.size.height,
+        ),
+        actual.size.width,
+        actual.size.height,
+    )
+}
+
+fn aligned_axis_origin(
+    actual_size: f64,
+    zone_origin: f64,
+    zone_size: f64,
+    work_area_origin: f64,
+    work_area_size: f64,
+) -> f64 {
+    let zone_max = zone_origin + zone_size;
+    let work_area_max = work_area_origin + work_area_size;
+    let zone_touches_start = coordinates_match(zone_origin, work_area_origin);
+    let zone_touches_end = coordinates_match(zone_max, work_area_max);
+    let origin =
+        if coordinates_match(actual_size, zone_size) || zone_touches_start && zone_touches_end {
+            zone_origin + (zone_size - actual_size) / 2.0
+        } else if zone_touches_start {
+            zone_origin
+        } else if zone_touches_end {
+            zone_max - actual_size
+        } else {
+            zone_origin + (zone_size - actual_size) / 2.0
+        };
+
+    if actual_size <= work_area_size {
+        origin.clamp(work_area_origin, work_area_max - actual_size)
+    } else {
+        work_area_origin
+    }
+}
+
+fn coordinates_match(left: f64, right: f64) -> bool {
+    (left - right).abs() < 0.1
+}
+
 #[must_use]
 pub fn default_menu_entries() -> Vec<MenuEntry> {
     let accelerators: HashMap<Command, String> = default_hotkey_bindings()
@@ -419,6 +476,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn constrained_move_preserves_size_and_requested_position() {
+        let work_area = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+        let actual = Rect::new(100.0, 100.0, 200.0, 100.0);
+        let requested = Rect::new(800.0, 100.0, 200.0, 100.0);
+
+        assert_eq!(
+            align_constrained_rect(actual, requested, work_area),
+            requested
+        );
+    }
+
+    #[test]
+    fn constrained_tiling_preserves_size_and_aligns_to_zone() {
+        let work_area = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+        let actual = Rect::new(100.0, 100.0, 600.0, 400.0);
+        let requested = Rect::new(500.0, 0.0, 500.0, 800.0);
+
+        assert_eq!(
+            align_constrained_rect(actual, requested, work_area),
+            Rect::new(400.0, 200.0, 600.0, 400.0)
+        );
+    }
+
+    #[test]
+    fn oversized_constrained_window_stays_at_work_area_start() {
+        let work_area = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+        let actual = Rect::new(-500.0, 0.0, 1_200.0, 100.0);
+        let requested = Rect::new(0.0, 0.0, 500.0, 800.0);
+
+        assert_eq!(
+            align_constrained_rect(actual, requested, work_area),
+            Rect::new(0.0, 350.0, 1_200.0, 100.0)
+        );
     }
 
     #[test]

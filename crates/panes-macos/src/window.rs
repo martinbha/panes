@@ -23,7 +23,7 @@ use core_foundation::{
 use core_graphics::geometry::{CGPoint, CGSize};
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use panes_core::{MAX_TRACKED_WINDOWS, Rect, WindowId};
-use panes_platform::{PlatformError, PlatformResult, ScreenId, WindowInfo};
+use panes_platform::{PlatformError, PlatformResult, ScreenId, WindowInfo, align_constrained_rect};
 
 use crate::{accessibility_authorization, coordinates::CoordinateSpace};
 
@@ -337,59 +337,6 @@ fn screen_id_for_native_rect(
                 .then_with(|| right_id.0.cmp(&left_id.0))
         })
         .map(|(id, _)| id)
-}
-
-fn align_constrained_rect(actual: Rect, zone: Rect, work_area: Rect) -> Rect {
-    Rect::new(
-        aligned_axis_origin(
-            actual.min_x(),
-            actual.size.width,
-            zone.min_x(),
-            zone.size.width,
-            work_area.min_x(),
-            work_area.size.width,
-        ),
-        aligned_axis_origin(
-            actual.min_y(),
-            actual.size.height,
-            zone.min_y(),
-            zone.size.height,
-            work_area.min_y(),
-            work_area.size.height,
-        ),
-        actual.size.width,
-        actual.size.height,
-    )
-}
-
-fn aligned_axis_origin(
-    _actual_origin: f64,
-    actual_size: f64,
-    zone_origin: f64,
-    zone_size: f64,
-    work_area_origin: f64,
-    work_area_size: f64,
-) -> f64 {
-    let zone_max = zone_origin + zone_size;
-    let work_area_max = work_area_origin + work_area_size;
-    let zone_touches_start = coordinates_match(zone_origin, work_area_origin);
-    let zone_touches_end = coordinates_match(zone_max, work_area_max);
-    let origin =
-        if coordinates_match(actual_size, zone_size) || zone_touches_start && zone_touches_end {
-            zone_origin + (zone_size - actual_size) / 2.0
-        } else if zone_touches_start {
-            zone_origin
-        } else if zone_touches_end {
-            zone_max - actual_size
-        } else {
-            zone_origin + (zone_size - actual_size) / 2.0
-        };
-
-    if actual_size <= work_area_size {
-        origin.clamp(work_area_origin, work_area_max - actual_size)
-    } else {
-        work_area_origin
-    }
 }
 
 fn native_rects_match(left: Rect, right: Rect) -> bool {
