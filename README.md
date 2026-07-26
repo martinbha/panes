@@ -19,6 +19,12 @@ Drag-to-snap, richer preferences, and platform-specific polish come after the ke
 - `crates/panes-windows`: Windows display, window, tray, and hotkey adapter.
 - `crates/panes-app`: app entry point.
 
+Shared geometry uses logical desktop coordinates with the primary display's
+lower-left corner as the origin, x increasing rightward, and y increasing
+upward. Displays left of or below the primary can have negative coordinates.
+Native adapters convert to and from their platform coordinate systems at the
+`panes-platform` boundary.
+
 ## Configuration
 
 panes reads an optional TOML config file at startup:

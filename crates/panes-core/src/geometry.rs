@@ -1,3 +1,8 @@
+/// A position in the panes logical desktop coordinate space.
+///
+/// The primary display's lower-left corner is the origin. x increases to the
+/// right and y increases upward; positions on displays left of or below the
+/// primary display can therefore be negative.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
     pub x: f64,
@@ -24,6 +29,11 @@ impl Size {
     }
 }
 
+/// An axis-aligned rectangle in the panes logical desktop coordinate space.
+///
+/// [`Self::origin`] is the lower-left corner. Width extends rightward and
+/// height extends upward. Platform adapters are responsible for converting
+/// native rectangles with a different origin or y direction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     pub origin: Point,
